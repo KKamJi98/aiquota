@@ -17,7 +17,20 @@ percent remaining, and a human-readable reset countdown.
 updated 3s ago
 ```
 
-## Build
+## Install
+
+```sh
+go install github.com/kkamji98/aiquota/cmd/aiquota@latest
+```
+
+This installs the `aiquota` binary to `$(go env GOPATH)/bin`. Since it is a
+status command you run often, a short shell alias is handy:
+
+```sh
+echo "alias aq='aiquota'" >> ~/.zshrc
+```
+
+## Build (from source)
 
 ```sh
 go build -o aiquota ./cmd/aiquota
