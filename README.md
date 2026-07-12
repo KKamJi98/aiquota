@@ -140,3 +140,7 @@ They spawn the real CLIs read-only and assert only safe outcomes.
   rather than guessing which bucket is the quota. The `codex app-server` must
   respond within 2s or the card shows `Timed out`.
 - No daemon, menu-bar app, dashboard, database, or cost accounting - by design.
+
+## License
+
+Released under the [MIT License](LICENSE).
