@@ -48,6 +48,22 @@ CLIs installed and logged in.
 | `aiquota --json`   | Print normalized results as JSON (safe fields only).                     |
 | `aiquota --debug`  | Also print safe per-provider timing and failure categories to stderr.    |
 | `aiquota --no-color`| Disable ANSI color (also honored via the `NO_COLOR` env convention).    |
+| `aiquota --watch` / `-w` | Keep the card on screen and auto-refresh on an interval until Ctrl-C. |
+| `aiquota -w --interval 300` | Watch with a custom refresh interval in seconds (default 60, floor 2). |
+
+### Watch mode
+
+`aiquota --watch` (or `-w`) clears the screen, renders once, then re-queries and
+redraws every `--interval` seconds (default 60) until you press Ctrl-C, which
+restores the cursor and exits cleanly. It is handy pinned in a tmux pane or a
+side terminal. Each tick performs a full refresh, so keep the interval at a value
+that does not hammer the native CLIs (the Claude `/usage` probe takes a few
+seconds); 60s is a comfortable default and the floor is 2s.
+
+```sh
+aq -w                 # watch, refresh every 60s
+aq -w --interval 300  # watch, refresh every 5 minutes
+```
 
 ## Source boundaries (why this is safe)
 

@@ -106,6 +106,17 @@ func TestRenderFreshnessFooter(t *testing.T) {
 	}
 }
 
+func TestRenderFreshnessFooterJustNow(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	out := Render([]model.ProviderResult{healthy("claude", "Max", now)}, 120, false, now, now)
+	if !strings.Contains(out, "updated just now") {
+		t.Errorf("expected 'updated just now' for a fresh save:\n%s", out)
+	}
+	if strings.Contains(out, "now ago") {
+		t.Errorf("footer should not read 'now ago':\n%s", out)
+	}
+}
+
 func TestCardFixedShape(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	lines := Card(healthy("claude", "Max", now), now, false)

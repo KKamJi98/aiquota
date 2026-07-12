@@ -11,7 +11,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -28,16 +30,23 @@ const defaultWidth = 80
 
 func main() {
 	var (
-		refresh bool
-		jsonOut bool
-		debug   bool
-		noColor bool
+		refresh  bool
+		jsonOut  bool
+		debug    bool
+		noColor  bool
+		watch    bool
+		watchW   bool
+		interval int
 	)
 	flag.BoolVar(&refresh, "refresh", false, "query providers now instead of using cached data")
 	flag.BoolVar(&jsonOut, "json", false, "print normalized results as JSON")
 	flag.BoolVar(&debug, "debug", false, "print safe per-provider timing and failure categories to stderr")
 	flag.BoolVar(&noColor, "no-color", false, "disable ANSI color")
+	flag.BoolVar(&watch, "watch", false, "keep the card on screen and auto-refresh on an interval (Ctrl-C to exit)")
+	flag.BoolVar(&watchW, "w", false, "shorthand for --watch")
+	flag.IntVar(&interval, "interval", 0, "watch refresh interval in seconds (default 60)")
 	flag.Parse()
+	watch = watch || watchW
 
 	providers := []provider.Provider{claude.New(), codex.New()}
 	order := providerNames(providers)
@@ -48,10 +57,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	now := time.Now()
+	// Watch mode: keep the card on screen and auto-refresh until Ctrl-C.
+	if watch {
+		runWatch(normalizeInterval(interval), func() {
+			refreshAndEmit(store, providers, order, jsonOut, noColor, debug)
+		})
+		return
+	}
 
 	// Fast path: a plain invocation with a fresh cache renders immediately.
 	if !refresh {
+		now := time.Now()
 		if data, ok, _ := store.Load(); ok && data.Fresh(now) {
 			emit(data.Results, now, data.SavedAt, jsonOut, noColor)
 			if debug {
@@ -61,8 +77,14 @@ func main() {
 		}
 	}
 
-	// Refresh path: query all providers concurrently, then merge so that a
-	// provider that failed this run keeps its last good cached value.
+	refreshAndEmit(store, providers, order, jsonOut, noColor, debug)
+}
+
+// refreshAndEmit queries all providers concurrently, merges with the prior cache
+// (keeping the last good value for any provider that failed this run), persists
+// the result, and renders it.
+func refreshAndEmit(store *cache.Store, providers []provider.Provider, order []string, jsonOut, noColor, debug bool) {
+	now := time.Now()
 	fresh, timings := queryAll(providers, now)
 	prior, _, _ := store.Load()
 	merged := cache.Merge(prior.Results, fresh, order)
@@ -74,6 +96,50 @@ func main() {
 	if debug {
 		for _, t := range timings {
 			fmt.Fprintf(os.Stderr, "provider=%s elapsed=%s result=%s\n", t.name, t.elapsed, t.status)
+		}
+	}
+}
+
+// normalizeInterval converts a --interval seconds value into a sane duration,
+// defaulting to 60s and flooring at 2s so watch mode never busy-loops.
+func normalizeInterval(sec int) time.Duration {
+	const (
+		def = 60
+		min = 2
+	)
+	if sec <= 0 {
+		sec = def
+	}
+	if sec < min {
+		sec = min
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// runWatch clears the screen and renders one frame immediately, then re-renders
+// every interval until SIGINT/SIGTERM. The cursor is hidden while watching and
+// restored on exit.
+func runWatch(interval time.Duration, frame func()) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+
+	fmt.Print("\x1b[?25l")         // hide cursor
+	defer fmt.Print("\x1b[?25h\n") // restore cursor on exit
+
+	draw := func() {
+		fmt.Print("\x1b[H\x1b[2J") // cursor home + clear screen
+		frame()
+	}
+	draw()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-sig:
+			return
+		case <-ticker.C:
+			draw()
 		}
 	}
 }

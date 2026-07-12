@@ -184,7 +184,10 @@ func Render(results []model.ProviderResult, termWidth int, color bool, now, save
 	}
 
 	if !savedAt.IsZero() {
-		footer := fmt.Sprintf("updated %s ago", FormatCountdown(now.Sub(savedAt)))
+		footer := "updated just now"
+		if age := now.Sub(savedAt); age >= time.Second {
+			footer = "updated " + FormatCountdown(age) + " ago"
+		}
 		b.WriteString(colorize(footer, ansiDim, color))
 		b.WriteString("\n")
 	}
