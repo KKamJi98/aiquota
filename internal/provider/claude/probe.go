@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -99,12 +100,13 @@ func probe(ctx context.Context) (string, error) {
 	}
 	defer os.RemoveAll(dir)
 
-	// `script -q /dev/null <cmd...>` (BSD/macOS form) allocates a PTY, discards
-	// its own typescript, and runs the command attached to it. Tools are
-	// disabled so no model/tool side effect is possible; only the client-side
+	// `script` allocates a PTY, discards its own typescript, and runs the command
+	// attached to it. The invocation form differs by platform: BSD/macOS takes the
+	// command as trailing args (so `*` stays literal), while util-linux takes it as
+	// a single `-c` shell string (so `*` must be quoted against globbing). Tools
+	// are disabled so no model/tool side effect is possible; only the client-side
 	// `/usage` view is exercised.
-	cmd := exec.Command("script", "-q", "/dev/null",
-		"claude", "--disallowedTools", "*")
+	cmd := scriptCommand()
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "COLUMNS=120", "LINES=50")
 
@@ -158,6 +160,18 @@ func probe(ctx context.Context) (string, error) {
 		return "", ctxErr
 	}
 	return out.String(), nil
+}
+
+// scriptCommand builds the platform-appropriate `script` invocation that runs
+// `claude` with tools disabled inside a PTY.
+func scriptCommand() *exec.Cmd {
+	const claudeBin = "claude"
+	if runtime.GOOS == "darwin" {
+		// BSD script: `script -q <file> <cmd> [args...]` (no shell; `*` literal).
+		return exec.Command("script", "-q", "/dev/null", claudeBin, "--disallowedTools", "*")
+	}
+	// util-linux script: `script -q -c "<cmd>" <file>` (runs via sh; quote `*`).
+	return exec.Command("script", "-q", "-c", claudeBin+" --disallowedTools '*'", "/dev/null")
 }
 
 // sleepCtx sleeps for d, returning false if ctx ends first.

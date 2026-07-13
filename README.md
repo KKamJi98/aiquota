@@ -132,9 +132,10 @@ They spawn the real CLIs read-only and assert only safe outcomes.
   require touching credentials), so an unrecognized signed-out state also degrades
   to `Unsupported`. Plan/tier is not shown for Claude (not reliably present in the
   view).
-- **Claude PTY uses the BSD/macOS `script` form** (`script -q /dev/null <cmd>`).
-  Linux support would need the `script -q -c "<cmd>" /dev/null` form or a PTY
-  library.
+- **Claude PTY uses the platform `script` form**: BSD/macOS
+  (`script -q /dev/null <cmd>`) and util-linux (`script -q -c "<cmd>" /dev/null`)
+  are selected by `runtime.GOOS`. macOS is the primary tested target; the Linux
+  path follows util-linux syntax and is exercised on WSL.
 - **Codex adapter maps only the documented `rateLimits` bucket.** If a future
   server omits it and returns only multi-bucket data, Fetch returns `Unsupported`
   rather than guessing which bucket is the quota. The `codex app-server` must
