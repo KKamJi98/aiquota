@@ -80,16 +80,10 @@ func resetLabel(w model.Window, now time.Time) string {
 	return "resets in " + FormatCountdown(w.ResetsAt.Sub(now))
 }
 
-// windowLines renders the two body lines for one window: a bar+percent line and
-// a reset line. Absent windows collapse to a single "n/a" line plus a blank.
+// windowLines renders the two body lines for one present window: a bar+percent
+// line and a reset line. Callers skip absent windows, which are not shown at all.
 func windowLines(label string, w model.Window, now time.Time, color bool) []string {
 	name := padRight(label, labelWidth)
-	if !w.Present {
-		return []string{
-			"  " + name + colorize("n/a", ansiDim, color),
-			"",
-		}
-	}
 	rem := w.RemainingPercent()
 	bar := progressBar(rem, barWidth, color)
 	pct := fmt.Sprintf("%3d%%", rem)
@@ -119,9 +113,21 @@ func Card(r model.ProviderResult, now time.Time, color bool) []string {
 			header = colorizeHeader(padded, name, r.Snapshot.Plan, color)
 		}
 		body = append(body, header, "")
-		body = append(body, windowLines("Session", r.Snapshot.Session, now, color)...)
-		body = append(body, "")
-		body = append(body, windowLines("Weekly", r.Snapshot.Weekly, now, color)...)
+		// Only present windows are shown; a provider may expose just one (e.g.
+		// Codex now reports a weekly limit and no 5h session window).
+		for _, w := range []struct {
+			label  string
+			window model.Window
+		}{
+			{"Session", r.Snapshot.Session},
+			{"Weekly", r.Snapshot.Weekly},
+		} {
+			if !w.window.Present {
+				continue
+			}
+			body = append(body, windowLines(w.label, w.window, now, color)...)
+			body = append(body, "")
+		}
 	} else {
 		header := "  " + colorize(name, ansiBold, color)
 		status := "  " + colorize(r.Failure.Label(), ansiRed, color)

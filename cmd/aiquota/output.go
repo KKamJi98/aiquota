@@ -31,7 +31,7 @@ type jsonProvider struct {
 
 func toJSONWindow(w model.Window) *jsonWindow {
 	if !w.Present {
-		return &jsonWindow{Present: false}
+		return nil // omitted from JSON (e.g. Codex has no 5h session window)
 	}
 	jw := &jsonWindow{Present: true, RemainingPct: w.RemainingPercent()}
 	if !w.ResetsAt.IsZero() {

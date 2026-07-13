@@ -130,15 +130,23 @@ func TestCardFixedShape(t *testing.T) {
 	}
 }
 
-func TestCardAbsentWindow(t *testing.T) {
+func TestCardAbsentWindowIsOmitted(t *testing.T) {
+	// Codex-style: only a weekly window, no 5h session. The Session row must be
+	// omitted entirely (not shown as "n/a"), while Weekly still renders.
 	now := time.Unix(1_700_000_000, 0)
 	r := model.Healthy(model.Snapshot{
 		Provider: "codex",
-		Session:  model.Window{Present: true, UsedPercent: 10, ResetsAt: now.Add(time.Hour)},
-		Weekly:   model.Window{Present: false},
+		Session:  model.Window{Present: false},
+		Weekly:   model.Window{Present: true, UsedPercent: 10, ResetsAt: now.Add(48 * time.Hour)},
 	})
 	out := strings.Join(Card(r, now, false), "\n")
-	if !strings.Contains(out, "n/a") {
-		t.Errorf("absent weekly window should render n/a:\n%s", out)
+	if strings.Contains(out, "Session") {
+		t.Errorf("absent session window must not be shown:\n%s", out)
+	}
+	if strings.Contains(out, "n/a") {
+		t.Errorf("absent window must be omitted, not rendered as n/a:\n%s", out)
+	}
+	if !strings.Contains(out, "Weekly") {
+		t.Errorf("present weekly window must still render:\n%s", out)
 	}
 }
