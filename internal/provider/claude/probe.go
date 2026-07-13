@@ -44,12 +44,13 @@ const (
 const fetchTimeout = 6 * time.Second
 
 // Probe timing within the budget: let the TUI initialize, type `/usage`, submit
-// it, then let the view render before capturing. Measured well under the 6s
-// ceiling during the feasibility spike (~4s wall).
+// it, then let the view render before capturing. Total stays under the 6s
+// ceiling (1.5 + 0.4 + 2.5 + 0.5 margin = 4.9s).
 const (
 	initDelay   = 1500 * time.Millisecond
 	submitDelay = 400 * time.Millisecond
-	renderDelay = 2000 * time.Millisecond
+	renderDelay = 2500 * time.Millisecond
+	killMargin  = 500 * time.Millisecond
 )
 
 // Provider fetches Claude subscription quota via the `/usage` view.
@@ -98,39 +99,42 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// probe spawns the Claude CLI inside a PTY (allocated cheaply via `script`),
-// types the `/usage` command, captures the rendered view, and returns the raw
-// terminal text. The CLI is run in a throwaway temp directory with tools
-// disabled. The child is always killed at the end (the interactive view never
-// exits on its own), so a kill is normal, not an error.
+// probe drives the Claude CLI `/usage` view and returns the reconstructed screen
+// text. The keystrokes are typed by a shell subprocess (printf into the PTY that
+// `script` allocates) rather than written from Go: on util-linux `script`,
+// input written from Go's side of the pipe/PTY does not register in the CLI,
+// while a real shell writer does. The CLI runs in a throwaway temp directory with
+// tools disabled. The interactive view never exits on its own, so the process
+// group is always killed at the end; a kill is the normal termination here.
 func probe(ctx context.Context) (string, error) {
-	dir, err := os.MkdirTemp("", "aiquota-claude-probe-")
+	// Run in the user's home directory, not a fresh temp dir: the Claude CLI on
+	// Linux does not accept slash-command input in a brand-new empty directory
+	// (the `/usage` keystrokes never register), whereas it works in an existing
+	// one. Home is outside any project, so no project CLAUDE.md/tools are loaded,
+	// and tools are disabled anyway.
+	dir, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("probe temp dir: %w", err)
+		return "", fmt.Errorf("probe home dir: %w", err)
 	}
-	defer os.RemoveAll(dir)
 
-	// `script` allocates a PTY, discards its own typescript, and runs the command
-	// attached to it. The invocation form differs by platform: BSD/macOS takes the
-	// command as trailing args (so `*` stays literal), while util-linux takes it as
-	// a single `-c` shell string (so `*` must be quoted against globbing). Tools
-	// are disabled so no model/tool side effect is possible; only the client-side
-	// `/usage` view is exercised.
-	cmd := scriptCommand()
+	// A subshell types `/usage` + Enter into the PTY, then idles; the outer kill
+	// stops capture. `printf '\r'` submits the command.
+	pipeline := fmt.Sprintf(
+		`( sleep %.2f; printf '/usage'; sleep %.2f; printf '\r'; sleep 30 ) | %s`,
+		initDelay.Seconds(), submitDelay.Seconds(), scriptPipeline())
+
+	cmd := exec.Command("sh", "-c", pipeline)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("COLUMNS=%d", probeCols),
-		fmt.Sprintf("LINES=%d", probeRows))
+		fmt.Sprintf("LINES=%d", probeRows),
+		"TERM=xterm-256color")
 
 	var out syncBuffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return "", fmt.Errorf("probe stdin: %w", err)
-	}
-	// Own process group so the whole child tree (script + claude + node) can be
-	// killed together; killing only `script` would orphan `claude`.
+	// Own process group so the whole child tree (sh + script + claude + node) is
+	// killed together; killing only `sh` would orphan the rest.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
@@ -138,21 +142,9 @@ func probe(ctx context.Context) (string, error) {
 	}
 	pgid := cmd.Process.Pid
 
-	// Type `/usage` and submit it once the TUI has initialized, aborting if the
-	// context ends first.
-	go func() {
-		if !sleepCtx(ctx, initDelay) {
-			return
-		}
-		_, _ = stdin.Write([]byte("/usage"))
-		if !sleepCtx(ctx, submitDelay) {
-			return
-		}
-		_, _ = stdin.Write([]byte("\r"))
-	}()
-
-	// Wait for the render window or the context deadline, whichever comes first.
-	captureDone := time.NewTimer(initDelay + submitDelay + renderDelay)
+	// Capture through init + submit + render, then a small margin, or stop early
+	// if the caller's context ends first.
+	captureDone := time.NewTimer(initDelay + submitDelay + renderDelay + killMargin)
 	defer captureDone.Stop()
 
 	var ctxErr error
@@ -162,10 +154,7 @@ func probe(ctx context.Context) (string, error) {
 		ctxErr = ctx.Err()
 	}
 
-	// Kill the whole process group and reap it. A kill is the expected way this
-	// interactive view ends, so cmd.Wait's error is intentionally ignored.
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
-	_ = stdin.Close()
 	_ = cmd.Wait()
 
 	if ctxErr != nil {
@@ -184,26 +173,13 @@ func reconstructScreen(raw string) string {
 	return term.String()
 }
 
-// scriptCommand builds the platform-appropriate `script` invocation that runs
-// `claude` with tools disabled inside a PTY.
-func scriptCommand() *exec.Cmd {
-	const claudeBin = "claude"
+// scriptPipeline returns the platform-appropriate `script` invocation (as a shell
+// fragment) that runs `claude` with tools disabled inside a PTY. BSD/macOS takes
+// the command as trailing args (so `*` stays literal); util-linux takes it as a
+// single `-c` shell string (so `*` is single-quoted against globbing).
+func scriptPipeline() string {
 	if runtime.GOOS == "darwin" {
-		// BSD script: `script -q <file> <cmd> [args...]` (no shell; `*` literal).
-		return exec.Command("script", "-q", "/dev/null", claudeBin, "--disallowedTools", "*")
+		return `script -q /dev/null claude --disallowedTools '*'`
 	}
-	// util-linux script: `script -q -c "<cmd>" <file>` (runs via sh; quote `*`).
-	return exec.Command("script", "-q", "-c", claudeBin+" --disallowedTools '*'", "/dev/null")
-}
-
-// sleepCtx sleeps for d, returning false if ctx ends first.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return true
-	case <-ctx.Done():
-		return false
-	}
+	return `script -q -c "claude --disallowedTools '*'" /dev/null`
 }
