@@ -150,3 +150,15 @@ func TestCardAbsentWindowIsOmitted(t *testing.T) {
 		t.Errorf("present weekly window must still render:\n%s", out)
 	}
 }
+
+func BenchmarkRender(b *testing.B) {
+	now := time.Unix(1_700_000_000, 0)
+	results := []model.ProviderResult{
+		healthy("claude", "Max", now),
+		healthy("codex", "Pro", now),
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		Render(results, 120, false, now, now)
+	}
+}

@@ -94,3 +94,38 @@ func TestMergeFailedWithNoPriorRecordsFailure(t *testing.T) {
 		t.Errorf("failure with no prior should be recorded: %+v", merged)
 	}
 }
+
+func BenchmarkLoad(b *testing.B) {
+	now := time.Unix(1_700_000_000, 0)
+	store := &Store{Path: filepath.Join(b.TempDir(), "cache.json")}
+	results := []model.ProviderResult{
+		model.Healthy(model.Snapshot{Provider: "claude", Session: model.Window{Present: true, UsedPercent: 30}}),
+		model.Healthy(model.Snapshot{Provider: "codex", Weekly: model.Window{Present: true, UsedPercent: 40}}),
+	}
+	if err := store.Save(results, now); err != nil {
+		b.Fatalf("Save: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, ok, err := store.Load(); err != nil || !ok {
+			b.Fatalf("Load: ok=%v err=%v", ok, err)
+		}
+	}
+}
+
+func BenchmarkMerge(b *testing.B) {
+	prior := []model.ProviderResult{
+		model.Healthy(model.Snapshot{Provider: "claude", Session: model.Window{Present: true, UsedPercent: 10}}),
+		model.Healthy(model.Snapshot{Provider: "codex", Weekly: model.Window{Present: true, UsedPercent: 20}}),
+	}
+	fresh := []model.ProviderResult{
+		model.Healthy(model.Snapshot{Provider: "claude", Session: model.Window{Present: true, UsedPercent: 30}}),
+		model.Failed("codex", model.FailureTimedOut),
+	}
+	order := []string{"claude", "codex"}
+	b.ReportAllocs()
+	for b.Loop() {
+		Merge(prior, fresh, order)
+	}
+}

@@ -1,8 +1,16 @@
 package codex
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -94,6 +102,77 @@ func TestAccountReadNotSignedIn(t *testing.T) {
 	}
 	if raw.signedIn() {
 		t.Fatal("signedIn() = true, want false")
+	}
+}
+
+func TestFetchCancellationKillsAppServerProcessGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups are Unix-specific")
+	}
+
+	tempDir := t.TempDir()
+	pidFile := filepath.Join(tempDir, "child.pid")
+	commandPath := filepath.Join(tempDir, "codex")
+	command := "#!/bin/sh\nsleep 30 &\necho $! > \"$AIQUOTA_TEST_PID_FILE\"\nwait\n"
+	if err := os.WriteFile(commandPath, []byte(command), 0o755); err != nil {
+		t.Fatalf("write fake codex: %v", err)
+	}
+	t.Setenv("PATH", tempDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AIQUOTA_TEST_PID_FILE", pidFile)
+	resolvedCommand, err := exec.LookPath("codex")
+	if err != nil || resolvedCommand != commandPath {
+		t.Fatalf("LookPath(codex) = %q, %v, want %q", resolvedCommand, err, commandPath)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := New().Fetch(ctx)
+		result <- err
+	}()
+
+	var pidBytes []byte
+	deadline := time.Now().Add(time.Second)
+	for {
+		pidBytes, err = os.ReadFile(pidFile)
+		if err == nil && strings.TrimSpace(string(pidBytes)) != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("fake codex child did not publish its pid")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	startedAt := time.Now()
+	cancel()
+	select {
+	case err = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("Fetch() did not return within 1s of cancellation")
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("Fetch() cancellation elapsed = %v, want <= 1s", elapsed)
+	}
+	assertFailureCategory(t, func() error { return err }, model.FailureUnavailable)
+
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil {
+		t.Fatalf("parse child pid: %v", err)
+	}
+	childDeadline := time.Now().Add(time.Second)
+	for {
+		err = syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("check child process %d: %v", pid, err)
+		}
+		if time.Now().After(childDeadline) {
+			t.Fatalf("child process %d still exists after cancellation", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

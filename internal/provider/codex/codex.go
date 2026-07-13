@@ -9,6 +9,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kkamji98/aiquota/internal/model"
@@ -50,7 +51,12 @@ func (*Provider) Fetch(ctx context.Context) (model.Snapshot, error) {
 }
 
 func fetch(ctx context.Context) (model.Snapshot, model.FailureCategory) {
-	cmd := exec.CommandContext(ctx, "codex", "app-server")
+	if ctx.Err() != nil {
+		return model.Snapshot{}, failureForContext(ctx)
+	}
+
+	cmd := exec.Command("codex", "app-server")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return model.Snapshot{}, model.FailureUnavailable
@@ -64,10 +70,17 @@ func fetch(ctx context.Context) (model.Snapshot, model.FailureCategory) {
 	if err := cmd.Start(); err != nil {
 		return model.Snapshot{}, failureForContext(ctx)
 	}
-	defer func() {
-		if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
-			_ = cmd.Process.Kill()
+	processDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			killProcessGroup(cmd.Process.Pid)
+		case <-processDone:
 		}
+	}()
+	defer func() {
+		close(processDone)
+		killProcessGroup(cmd.Process.Pid)
 		_ = cmd.Wait()
 	}()
 
@@ -120,6 +133,10 @@ func fetch(ctx context.Context) (model.Snapshot, model.FailureCategory) {
 		return model.Snapshot{}, providerFailureCategory(err)
 	}
 	return snapshot, model.FailureNone
+}
+
+func killProcessGroup(pid int) {
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
 }
 
 func call(ctx context.Context, scanner *bufio.Scanner, encoder *json.Encoder, request rpcRequest, target any) model.FailureCategory {

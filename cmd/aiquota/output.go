@@ -2,8 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
-	"os"
+	"strings"
 	"time"
 
 	"github.com/kkamji98/aiquota/internal/model"
@@ -41,7 +40,7 @@ func toJSONWindow(w model.Window) *jsonWindow {
 	return jw
 }
 
-func printJSON(results []model.ProviderResult, savedAt time.Time) {
+func jsonOutput(results []model.ProviderResult, savedAt time.Time, compact bool) string {
 	out := struct {
 		SavedAt   time.Time      `json:"saved_at"`
 		Providers []jsonProvider `json:"providers"`
@@ -67,10 +66,13 @@ func printJSON(results []model.ProviderResult, savedAt time.Time) {
 		out.Providers = append(out.Providers, jp)
 	}
 
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(out); err != nil {
-		fmt.Fprintln(os.Stderr, "aiquota: json encode failed")
-		os.Exit(1)
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	if !compact {
+		enc.SetIndent("", "  ")
 	}
+	if err := enc.Encode(out); err != nil {
+		return ""
+	}
+	return b.String()
 }

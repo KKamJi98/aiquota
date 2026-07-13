@@ -10,8 +10,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -28,25 +30,19 @@ import (
 
 const defaultWidth = 80
 
+type cliOptions struct {
+	refresh  bool
+	jsonOut  bool
+	debug    bool
+	noColor  bool
+	watch    bool
+	interval int
+}
+
 func main() {
-	var (
-		refresh  bool
-		jsonOut  bool
-		debug    bool
-		noColor  bool
-		watch    bool
-		watchW   bool
-		interval int
-	)
-	flag.BoolVar(&refresh, "refresh", false, "query providers now instead of using cached data")
-	flag.BoolVar(&jsonOut, "json", false, "print normalized results as JSON")
-	flag.BoolVar(&debug, "debug", false, "print safe per-provider timing and failure categories to stderr")
-	flag.BoolVar(&noColor, "no-color", false, "disable ANSI color")
-	flag.BoolVar(&watch, "watch", false, "keep the card on screen and auto-refresh on an interval (Ctrl-C to exit)")
-	flag.BoolVar(&watchW, "w", false, "shorthand for --watch")
-	flag.IntVar(&interval, "interval", 0, "watch refresh interval in seconds (default 60)")
+	var options cliOptions
+	registerFlags(flag.CommandLine, &options)
 	flag.Parse()
-	watch = watch || watchW
 
 	providers := []provider.Provider{claude.New(), codex.New()}
 	order := providerNames(providers)
@@ -56,48 +52,113 @@ func main() {
 		fmt.Fprintln(os.Stderr, "aiquota: cannot locate cache dir")
 		os.Exit(1)
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// Watch mode: keep the card on screen and auto-refresh until Ctrl-C.
-	if watch {
-		runWatch(normalizeInterval(interval), func() {
-			refreshAndEmit(store, providers, order, jsonOut, noColor, debug)
+	if options.watch {
+		runWatch(ctx, os.Stdout, normalizeInterval(options.interval), options.jsonOut, func(ctx context.Context) string {
+			if options.debug && !options.jsonOut {
+				return refreshInteractiveFrame(ctx, store, providers, order, options.noColor)
+			}
+			return refreshAndRender(ctx, store, providers, order, options.jsonOut, options.noColor, options.debug, options.jsonOut)
 		})
 		return
 	}
 
 	// Fast path: a plain invocation with a fresh cache renders immediately.
-	if !refresh {
+	if !options.refresh {
 		now := time.Now()
 		if data, ok, _ := store.Load(); ok && data.Fresh(now) {
-			emit(data.Results, now, data.SavedAt, jsonOut, noColor)
-			if debug {
+			emit(data.Results, now, data.SavedAt, options.jsonOut, options.noColor)
+			if options.debug {
 				fmt.Fprintf(os.Stderr, "cache hit, age=%s\n", render.FormatCountdown(data.Age(now)))
 			}
 			return
 		}
 	}
 
-	refreshAndEmit(store, providers, order, jsonOut, noColor, debug)
+	refreshAndEmit(ctx, store, providers, order, options.jsonOut, options.noColor, options.debug)
+}
+
+// registerFlags binds long option names and their single-letter aliases.
+func registerFlags(flags *flag.FlagSet, options *cliOptions) {
+	flags.BoolVar(&options.refresh, "refresh", false, "query providers now instead of using cached data")
+	flags.BoolVar(&options.refresh, "r", false, "shorthand for --refresh")
+	flags.BoolVar(&options.jsonOut, "json", false, "print normalized results as JSON")
+	flags.BoolVar(&options.jsonOut, "j", false, "shorthand for --json")
+	flags.BoolVar(&options.debug, "debug", false, "print safe per-provider timing and failure categories to stderr")
+	flags.BoolVar(&options.debug, "d", false, "shorthand for --debug")
+	flags.BoolVar(&options.noColor, "no-color", false, "disable ANSI color")
+	flags.BoolVar(&options.noColor, "n", false, "shorthand for --no-color")
+	flags.BoolVar(&options.watch, "watch", false, "keep the card on screen and auto-refresh on an interval (Ctrl-C to exit)")
+	flags.BoolVar(&options.watch, "w", false, "shorthand for --watch")
+	flags.IntVar(&options.interval, "interval", 0, "watch refresh interval in seconds (default 60)")
+	flags.IntVar(&options.interval, "i", 0, "shorthand for --interval")
 }
 
 // refreshAndEmit queries all providers concurrently, merges with the prior cache
 // (keeping the last good value for any provider that failed this run), persists
 // the result, and renders it.
-func refreshAndEmit(store *cache.Store, providers []provider.Provider, order []string, jsonOut, noColor, debug bool) {
+func refreshAndEmit(ctx context.Context, store *cache.Store, providers []provider.Provider, order []string, jsonOut, noColor, debug bool) {
+	_, _ = io.WriteString(os.Stdout, refreshAndRender(ctx, store, providers, order, jsonOut, noColor, debug, false))
+}
+
+type preparedRefresh struct {
+	frame       string
+	diagnostics string
+}
+
+// refreshAndRender queries all providers concurrently, merges with the prior
+// cache (keeping the last good value for any provider that failed this run),
+// persists the result, and returns a complete frame for the caller to render.
+func refreshAndRender(ctx context.Context, store *cache.Store, providers []provider.Provider, order []string, jsonOut, noColor, debug, compactJSON bool) string {
+	prepared := prepareRefresh(ctx, store, providers, order, jsonOut, noColor, debug, compactJSON)
+	if prepared.diagnostics != "" {
+		_, _ = io.WriteString(os.Stderr, prepared.diagnostics)
+	}
+	return prepared.frame
+}
+
+func refreshInteractiveFrame(ctx context.Context, store *cache.Store, providers []provider.Provider, order []string, noColor bool) string {
+	prepared := prepareRefresh(ctx, store, providers, order, false, noColor, true, false)
+	return prepared.frame + prepared.diagnostics
+}
+
+func prepareRefresh(ctx context.Context, store *cache.Store, providers []provider.Provider, order []string, jsonOut, noColor, debug, compactJSON bool) preparedRefresh {
 	now := time.Now()
-	fresh, timings := queryAll(providers, now)
-	prior, _, _ := store.Load()
+	fresh, timings := queryAll(ctx, providers, now)
+	prior, priorOK, _ := store.Load()
 	merged := cache.Merge(prior.Results, fresh, order)
-	if err := store.Save(merged, now); err != nil && debug {
-		fmt.Fprintf(os.Stderr, "cache save failed: %v\n", err)
+	savedAt := now
+	var diagnostics strings.Builder
+	shouldSave := anySuccessful(fresh) || !priorOK || !anySuccessful(prior.Results)
+	if shouldSave {
+		if err := store.Save(merged, now); err != nil && debug {
+			fmt.Fprintf(&diagnostics, "cache save failed: %v\n", err)
+		}
+	} else {
+		savedAt = prior.SavedAt
 	}
 
-	emit(merged, now, now, jsonOut, noColor)
 	if debug {
 		for _, t := range timings {
-			fmt.Fprintf(os.Stderr, "provider=%s elapsed=%s result=%s\n", t.name, t.elapsed, t.status)
+			fmt.Fprintf(&diagnostics, "provider=%s elapsed=%s result=%s\n", t.name, t.elapsed, t.status)
 		}
 	}
+	return preparedRefresh{
+		frame:       renderOutput(merged, now, savedAt, jsonOut, noColor, compactJSON),
+		diagnostics: diagnostics.String(),
+	}
+}
+
+func anySuccessful(results []model.ProviderResult) bool {
+	for _, result := range results {
+		if result.OK() {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeInterval converts a --interval seconds value into a sane duration,
@@ -116,32 +177,55 @@ func normalizeInterval(sec int) time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
-// runWatch clears the screen and renders one frame immediately, then re-renders
-// every interval until SIGINT/SIGTERM. The cursor is hidden while watching and
-// restored on exit.
-func runWatch(interval time.Duration, frame func()) {
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-
-	fmt.Print("\x1b[?25l")         // hide cursor
-	defer fmt.Print("\x1b[?25h\n") // restore cursor on exit
-
-	draw := func() {
-		fmt.Print("\x1b[H\x1b[2J") // cursor home + clear screen
-		frame()
+// runWatch renders one frame immediately, then re-renders every interval until
+// SIGINT/SIGTERM. It keeps the previous frame visible until the next one is
+// ready, preventing slow provider queries from exposing a blank terminal.
+// The cursor is hidden while watching and restored on exit.
+func runWatch(ctx context.Context, w io.Writer, interval time.Duration, jsonOut bool, frame func(context.Context) string) {
+	if !jsonOut {
+		_, _ = io.WriteString(w, "\x1b[?25l")
+		defer func() { _, _ = io.WriteString(w, "\x1b[?25h\n") }()
 	}
-	draw()
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	draw := func() bool {
+		nextFrame := frame(ctx)
+		if ctx.Err() != nil {
+			return false
+		}
+		writeWatchOutput(w, nextFrame, jsonOut)
+		return true
+	}
+	if !draw() {
+		return
+	}
+
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 	for {
 		select {
-		case <-sig:
+		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			draw()
+		case <-timer.C:
+			if !draw() {
+				return
+			}
+			timer.Reset(interval)
 		}
 	}
+}
+
+func writeWatchOutput(w io.Writer, frame string, jsonOut bool) {
+	if jsonOut {
+		_, _ = io.WriteString(w, frame)
+		return
+	}
+	writeWatchFrame(w, frame)
+}
+
+// writeWatchFrame updates the screen after a complete frame is ready. Erasing
+// only after the frame preserves the prior frame while the next refresh runs.
+func writeWatchFrame(w io.Writer, frame string) {
+	_, _ = io.WriteString(w, "\x1b[H"+frame+"\x1b[J")
 }
 
 type timing struct {
@@ -153,8 +237,8 @@ type timing struct {
 // queryAll runs every provider concurrently and returns normalized results plus
 // safe timing info for --debug. Each adapter enforces its own hard timeout; the
 // outer context is a generous backstop so one slow adapter cannot hang the CLI.
-func queryAll(providers []provider.Provider, now time.Time) ([]model.ProviderResult, []timing) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+func queryAll(parent context.Context, providers []provider.Provider, now time.Time) ([]model.ProviderResult, []timing) {
+	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
 	defer cancel()
 
 	results := make([]model.ProviderResult, len(providers))
@@ -211,13 +295,17 @@ func providerNames(providers []provider.Provider) []string {
 
 // emit writes the results either as JSON or as rendered ANSI cards.
 func emit(results []model.ProviderResult, now, savedAt time.Time, jsonOut, noColor bool) {
+	_, _ = io.WriteString(os.Stdout, renderOutput(results, now, savedAt, jsonOut, noColor, false))
+}
+
+// renderOutput prepares either JSON or ANSI card output without writing it.
+func renderOutput(results []model.ProviderResult, now, savedAt time.Time, jsonOut, noColor, compactJSON bool) string {
 	if jsonOut {
-		printJSON(results, savedAt)
-		return
+		return jsonOutput(results, savedAt, compactJSON)
 	}
 	color := colorEnabled(noColor)
 	width := terminalWidth()
-	fmt.Print(render.Render(results, width, color, now, savedAt))
+	return render.Render(results, width, color, now, savedAt)
 }
 
 // colorEnabled honors --no-color, the NO_COLOR convention, and whether stdout is
