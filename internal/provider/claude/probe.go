@@ -26,7 +26,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hinshun/vt10x"
+
 	"github.com/kkamji98/aiquota/internal/model"
+)
+
+// Virtual terminal grid size. The child renders into a PTY of roughly this size,
+// and the same size is used to replay the captured byte stream so the final
+// screen is reconstructed faithfully.
+const (
+	probeCols = 120
+	probeRows = 50
 )
 
 // fetchTimeout is the hard ceiling for a single Fetch. On expiry the child
@@ -108,7 +118,9 @@ func probe(ctx context.Context) (string, error) {
 	// `/usage` view is exercised.
 	cmd := scriptCommand()
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "COLUMNS=120", "LINES=50")
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("COLUMNS=%d", probeCols),
+		fmt.Sprintf("LINES=%d", probeRows))
 
 	var out syncBuffer
 	cmd.Stdout = &out
@@ -159,7 +171,17 @@ func probe(ctx context.Context) (string, error) {
 	if ctxErr != nil {
 		return "", ctxErr
 	}
-	return out.String(), nil
+	return reconstructScreen(out.String()), nil
+}
+
+// reconstructScreen replays the captured PTY byte stream through a virtual
+// terminal so the final rendered screen is read as a clean 2D grid. Scraping the
+// raw stream directly loses column spacing (words merge) and includes redraw
+// artifacts (dropped characters); replaying it into the grid resolves both.
+func reconstructScreen(raw string) string {
+	term := vt10x.New(vt10x.WithSize(probeCols, probeRows))
+	_, _ = term.Write([]byte(raw))
+	return term.String()
 }
 
 // scriptCommand builds the platform-appropriate `script` invocation that runs

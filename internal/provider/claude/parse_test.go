@@ -55,6 +55,42 @@ func TestParseUsageHealthy(t *testing.T) {
 	}
 }
 
+// wslFixture mirrors the CLI 2.1.197 layout captured on WSL: a comma date
+// separator ("Jul 18, 4:59pm" instead of "Jul 18 at 5pm") and an extra
+// "Current week (Fable)" block that must NOT be mistaken for the weekly window.
+const wslFixture = "Current session\n" +
+	"\x1b[38;5;114m███████████\x1b[39m 22% used   Resets 1:29pm (Asia/Seoul)\n" +
+	"Current week (all models)\n" +
+	"\x1b[38;5;114m██████████████████████▌\x1b[39m 45% used   Resets Jul 18, 4:59pm (Asia/Seoul)\n" +
+	"Current week (Fable)\n" +
+	"\x1b[38;5;114m███████████████████▌\x1b[39m 39% used   Resets Jul 18, 4:59pm (Asia/Seoul)\n"
+
+func TestParseUsageWSLCommaDateAndFableWeek(t *testing.T) {
+	seoul, _ := time.LoadLocation("Asia/Seoul")
+	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, seoul)
+
+	snap, err := parseUsageAt(wslFixture, now)
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+	if !snap.Session.Present || snap.Session.UsedPercent != 22 {
+		t.Errorf("Session = %+v, want present with 22%%", snap.Session)
+	}
+	// Weekly must be the "all models" block (45%), not the "Fable" block (39%).
+	if !snap.Weekly.Present || snap.Weekly.UsedPercent != 45 {
+		t.Errorf("Weekly = %+v, want present with 45%% (all models, not Fable)", snap.Weekly)
+	}
+	wantSession := time.Date(2026, time.July, 13, 13, 29, 0, 0, seoul)
+	if !snap.Session.ResetsAt.Equal(wantSession) {
+		t.Errorf("Session.ResetsAt = %v, want %v", snap.Session.ResetsAt, wantSession)
+	}
+	// Comma date form must resolve to Jul 18 16:59 Seoul.
+	wantWeekly := time.Date(2026, time.July, 18, 16, 59, 0, 0, seoul)
+	if !snap.Weekly.ResetsAt.Equal(wantWeekly) {
+		t.Errorf("Weekly.ResetsAt = %v, want %v", snap.Weekly.ResetsAt, wantWeekly)
+	}
+}
+
 func TestParseUsageBareClockRollsToNextDay(t *testing.T) {
 	// When the bare session clock time has already passed today, it must resolve
 	// to tomorrow's occurrence.

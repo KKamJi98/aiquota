@@ -28,6 +28,12 @@ var (
 
 	rePct   = regexp.MustCompile(`(\d+)%\s*used`)
 	reReset = regexp.MustCompile(`(?i)resets\s+(.+?)\s*\(([A-Za-z]+(?:/[A-Za-z_]+)*)\)`)
+
+	// Within a reset string, the date (weekly) and clock parts are matched
+	// independently so both separators the CLI has used are accepted:
+	// "Jul 18 at 5pm" and "Jul 18, 4:59pm".
+	reResetDate  = regexp.MustCompile(`(?i)([A-Z][a-z]{2})\s+(\d{1,2})`)
+	reResetClock = regexp.MustCompile(`(?i)(\d{1,2}(?::\d{2})?\s*[ap]m)`)
 )
 
 // signedOutMarkers are phrases the CLI shows when there is no usable subscription
@@ -122,8 +128,10 @@ func nextWindowIndex(lowerSegment string) int {
 
 // parseReset resolves the CLI's abbreviated reset string into an absolute time.
 // The CLI prints either a bare clock time ("11:40pm") for the short session
-// window or a month/day plus time ("Jul 18 at 5pm") for the weekly window, each
-// followed by an IANA zone the caller has already extracted.
+// window or a month/day plus time for the weekly window. Two weekly separators
+// have been observed across CLI versions - "Jul 18 at 5pm" and "Jul 18, 4:59pm" -
+// so the date and clock are matched independently rather than by a fixed split.
+// The zone has already been extracted by the caller.
 func parseReset(core, zone string, now time.Time) (time.Time, error) {
 	loc, err := time.LoadLocation(zone)
 	if err != nil {
@@ -131,12 +139,18 @@ func parseReset(core, zone string, now time.Time) (time.Time, error) {
 	}
 	core = strings.TrimSpace(core)
 
-	if datePart, timePart, ok := strings.Cut(core, " at "); ok {
-		h, m, err := parseClock(strings.TrimSpace(timePart))
-		if err != nil {
-			return time.Time{}, err
-		}
-		d, err := time.Parse("Jan 2", strings.TrimSpace(datePart))
+	cm := reResetClock.FindStringSubmatch(core)
+	if cm == nil {
+		return time.Time{}, fmt.Errorf("no clock in reset %q", core)
+	}
+	h, m, err := parseClock(strings.ToLower(strings.ReplaceAll(cm[1], " ", "")))
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	if dm := reResetDate.FindStringSubmatch(core); dm != nil {
+		// Dated (weekly) reset.
+		d, err := time.Parse("Jan 2", dm[1]+" "+dm[2])
 		if err != nil {
 			return time.Time{}, err
 		}
@@ -150,13 +164,9 @@ func parseReset(core, zone string, now time.Time) (time.Time, error) {
 		return t, nil
 	}
 
-	h, m, err := parseClock(core)
-	if err != nil {
-		return time.Time{}, err
-	}
+	// Bare clock (session) reset: next occurrence of that time.
 	n := now.In(loc)
 	t := time.Date(n.Year(), n.Month(), n.Day(), h, m, 0, 0, loc)
-	// A bare clock time is the next occurrence of that time.
 	if t.Before(n) {
 		t = t.Add(24 * time.Hour)
 	}
