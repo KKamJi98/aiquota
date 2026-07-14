@@ -8,8 +8,11 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/hinshun/vt10x"
 
 	"github.com/kkamji98/aiquota/internal/cache"
 	"github.com/kkamji98/aiquota/internal/model"
@@ -81,16 +84,172 @@ func TestRegisterFlagsLongOptions(t *testing.T) {
 }
 
 func TestWriteWatchFrameDoesNotClearBeforeFrame(t *testing.T) {
-	var got bytes.Buffer
+	var got countingWriter
 	writeWatchFrame(&got, "new frame\n")
 
-	want := "\x1b[Hnew frame\n\x1b[J"
+	want := "\x1b[Hnew frame\x1b[K\r\n\x1b[J"
 	if got.String() != want {
 		t.Errorf("writeWatchFrame() = %q, want %q", got.String(), want)
+	}
+	if got.writes != 1 {
+		t.Errorf("writeWatchFrame() writes = %d, want 1", got.writes)
 	}
 	if strings.Contains(got.String(), "\x1b[2J") {
 		t.Errorf("writeWatchFrame() must not clear the screen before rendering: %q", got.String())
 	}
+}
+
+func TestWriteWatchFrameReplacesVisibleGrid(t *testing.T) {
+	tests := []struct {
+		name      string
+		oldFrame  string
+		newFrame  string
+		wantRows  []string
+		forbidden []string
+	}{
+		{
+			name:      "same size",
+			oldFrame:  "old one\nold two\n",
+			newFrame:  "new one\nnew two\n",
+			wantRows:  []string{"new one", "new two"},
+			forbidden: []string{"old one", "old two"},
+		},
+		{
+			name:      "shorter rows",
+			oldFrame:  "usage OLD_SUFFIX\nupdated 20h ago\n",
+			newFrame:  "usage\nupdated just now\n",
+			wantRows:  []string{"usage", "updated just now"},
+			forbidden: []string{"OLD_SUFFIX", "d 20h", "20h ago"},
+		},
+		{
+			name:      "fewer rows",
+			oldFrame:  "old first\nold extra OLD_ROW\nold third\n",
+			newFrame:  "new only\n",
+			wantRows:  []string{"new only"},
+			forbidden: []string{"old first", "OLD_ROW", "old third"},
+		},
+		{
+			name:      "longer frame",
+			oldFrame:  "old\n",
+			newFrame:  "new longer row\nsecond new row\nthird new row\n",
+			wantRows:  []string{"new longer row", "second new row", "third new row"},
+			forbidden: []string{"old"},
+		},
+		{
+			name:      "final line without newline",
+			oldFrame:  "old long suffix\nold extra row\n",
+			newFrame:  "final",
+			wantRows:  []string{"final"},
+			forbidden: []string{"suffix", "old extra row"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			terminal := vt10x.New(vt10x.WithSize(40, 8))
+			writeWatchFrame(terminal, test.oldFrame)
+			writeWatchFrame(terminal, test.newFrame)
+			grid := visibleGrid(terminal.String(), 8)
+
+			for row, want := range test.wantRows {
+				if grid[row] != want {
+					t.Errorf("visible row %d = %q, want %q", row, grid[row], want)
+				}
+			}
+			for row := len(test.wantRows); row < len(grid); row++ {
+				if grid[row] != "" {
+					t.Errorf("visible extra row %d = %q, want blank", row, grid[row])
+				}
+			}
+			for _, stale := range test.forbidden {
+				if strings.Contains(terminal.String(), stale) {
+					t.Errorf("visible grid contains stale cells %q: %q", stale, terminal.String())
+				}
+			}
+		})
+	}
+}
+
+func TestRunWatchKeepsPreviousFrameDuringRefresh(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out lockedWriter
+	refreshStarted := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	done := make(chan struct{})
+	frames := 0
+	go func() {
+		runWatch(ctx, &out, time.Millisecond, false, func(context.Context) string {
+			frames++
+			switch frames {
+			case 1:
+				return "first complete frame\nold extra row\n"
+			case 2:
+				close(refreshStarted)
+				<-releaseRefresh
+				return "second complete frame\n"
+			default:
+				cancel()
+				return ""
+			}
+		})
+		close(done)
+	}()
+
+	<-refreshStarted
+	duringRefresh := out.String()
+	if !strings.Contains(duringRefresh, "first complete frame") || strings.Contains(duringRefresh, "second complete frame") {
+		t.Fatalf("output changed before refresh completed: %q", duringRefresh)
+	}
+	close(releaseRefresh)
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("watch did not finish")
+	}
+	if final := out.String(); !strings.Contains(final, "second complete frame") {
+		t.Fatalf("completed replacement frame was not written: %q", final)
+	}
+}
+
+type countingWriter struct {
+	buf    bytes.Buffer
+	writes int
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.writes++
+	return w.buf.Write(p)
+}
+
+func (w *countingWriter) String() string {
+	return w.buf.String()
+}
+
+type lockedWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *lockedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func visibleGrid(screen string, height int) []string {
+	rows := strings.Split(screen, "\n")
+	grid := make([]string, height)
+	for row := 0; row < height && row < len(rows); row++ {
+		grid[row] = strings.TrimRight(rows[row], " ")
+	}
+	return grid
 }
 
 func TestQueryAllCancelsInFlightProviders(t *testing.T) {

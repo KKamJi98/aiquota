@@ -222,10 +222,28 @@ func writeWatchOutput(w io.Writer, frame string, jsonOut bool) {
 	writeWatchFrame(w, frame)
 }
 
-// writeWatchFrame updates the screen after a complete frame is ready. Erasing
-// only after the frame preserves the prior frame while the next refresh runs.
+// writeWatchFrame updates the screen after a complete frame is ready. Each new
+// row is written before its old suffix is erased, and the remaining old rows are
+// erased only after the complete replacement sequence has been assembled.
 func writeWatchFrame(w io.Writer, frame string) {
-	_, _ = io.WriteString(w, "\x1b[H"+frame+"\x1b[J")
+	var replacement strings.Builder
+	replacement.Grow(len(frame) + strings.Count(frame, "\n")*4 + 6)
+	replacement.WriteString("\x1b[H")
+	for {
+		newline := strings.IndexByte(frame, '\n')
+		if newline < 0 {
+			replacement.WriteString(frame)
+			if frame != "" {
+				replacement.WriteString("\x1b[K")
+			}
+			break
+		}
+		replacement.WriteString(frame[:newline])
+		replacement.WriteString("\x1b[K\r\n")
+		frame = frame[newline+1:]
+	}
+	replacement.WriteString("\x1b[J")
+	_, _ = io.WriteString(w, replacement.String())
 }
 
 type timing struct {

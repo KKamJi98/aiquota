@@ -39,6 +39,33 @@ go build -o aiquota ./cmd/aiquota
 Requires Go 1.26+, macOS (darwin/arm64), and the native `codex` and `claude`
 CLIs installed and logged in.
 
+### Install the Mac source build on WSL
+
+From this repository checkout on the Mac, run the explicit installer:
+
+```sh
+make install-wsl
+```
+
+The SSH host defaults to `wsl`. Set `AIQUOTA_WSL_HOST` for another host, or call
+the underlying script directly when an argument is more convenient:
+
+```sh
+AIQUOTA_WSL_HOST=my-wsl-host make install-wsl
+scripts/install-wsl.sh my-wsl-host
+```
+
+The helper cross-builds `linux/amd64`, transfers it to a unique temporary file
+under `/home/kkamji/go/bin`, smoke-tests it, atomically replaces `aiquota`, and
+compares the Mac `shasum -a 256` result with WSL `sha256sum`. If post-install
+verification fails, it restores the previous binary. Successful installs leave
+no backup or temporary binary behind.
+
+WSL invocation does not conditionally rebuild or pull source. The WSL machine
+does not have this source checkout, and an invocation-time wrapper would make a
+status command mutate Git state or depend on network availability. Installation
+is therefore an explicit deployment step from the Mac source of truth.
+
 ## Commands
 
 | Command            | Behavior                                                                 |
@@ -63,7 +90,9 @@ overlap or queue another refresh. It is handy pinned in a tmux pane or a side
 terminal. `--watch --json` writes newline-delimited JSON instead of terminal
 control sequences. With interactive `--watch --debug`, safe timing lines are
 included below the card in each complete redraw instead of being written between
-frames. The default interval is 60s and the floor is 2s.
+frames. Terminals narrower than the 34-cell card automatically use a borderless
+compact layout so the watch frame does not wrap. The default interval is 60s and
+the floor is 2s.
 
 ```sh
 aq -w                 # watch, refresh every 60s

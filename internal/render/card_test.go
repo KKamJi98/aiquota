@@ -57,11 +57,49 @@ func TestRenderNarrowIsStacked(t *testing.T) {
 	out := Render([]model.ProviderResult{
 		healthy("claude", "Max", now),
 		healthy("codex", "Pro", now),
-	}, 30, false, now, now)
+	}, 60, false, now, now)
 
 	first := strings.SplitN(out, "\n", 2)[0]
 	if got := strings.Count(first, "╭"); got != 1 {
 		t.Errorf("narrow layout first row should have 1 card top, got %d: %q", got, first)
+	}
+}
+
+func TestRenderVeryNarrowUsesCompactLayoutWithoutWrapping(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	const width = 30
+	out := Render([]model.ProviderResult{
+		healthy("claude", "Max", now),
+		healthy("codex", "Pro", now),
+	}, width, false, now, now)
+
+	if strings.ContainsAny(out, "╭╮╰╯│") {
+		t.Fatalf("compact layout must not contain fixed-width card borders:\n%s", out)
+	}
+	for i, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if got := visibleLen(line); got > width {
+			t.Errorf("line %d visible width = %d, want <= %d: %q", i, got, width, line)
+		}
+	}
+	for _, want := range []string{"Claude Max", "Session 72% left", "Codex Pro", "updated just now"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("compact layout missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderTinyWidthTruncatesEveryCompactLine(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	const width = 8
+	out := Render([]model.ProviderResult{healthy("claude", "Max", now)}, width, true, now, now)
+
+	for i, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if got := visibleLen(line); got > width {
+			t.Errorf("line %d visible width = %d, want <= %d: %q", i, got, width, line)
+		}
+	}
+	if !strings.Contains(out, "\x1b") {
+		t.Error("compact color render should contain ANSI escapes")
 	}
 }
 

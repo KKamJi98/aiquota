@@ -125,14 +125,15 @@ func TestFetchCancellationKillsAppServerProcessGroup(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	result := make(chan error, 1)
+	defer cancel()
+	result := make(chan model.FailureCategory, 1)
 	go func() {
-		_, err := New().Fetch(ctx)
-		result <- err
+		_, category := fetch(ctx)
+		result <- category
 	}()
 
 	var pidBytes []byte
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		pidBytes, err = os.ReadFile(pidFile)
 		if err == nil && strings.TrimSpace(string(pidBytes)) != "" {
@@ -146,15 +147,18 @@ func TestFetchCancellationKillsAppServerProcessGroup(t *testing.T) {
 	}
 	startedAt := time.Now()
 	cancel()
+	var category model.FailureCategory
 	select {
-	case err = <-result:
+	case category = <-result:
 	case <-time.After(time.Second):
-		t.Fatal("Fetch() did not return within 1s of cancellation")
+		t.Fatal("fetch() did not return within 1s of cancellation")
 	}
 	if elapsed := time.Since(startedAt); elapsed > time.Second {
-		t.Fatalf("Fetch() cancellation elapsed = %v, want <= 1s", elapsed)
+		t.Fatalf("fetch() cancellation elapsed = %v, want <= 1s", elapsed)
 	}
-	assertFailureCategory(t, func() error { return err }, model.FailureUnavailable)
+	if category != model.FailureUnavailable {
+		t.Fatalf("fetch() category = %q, want %q", category, model.FailureUnavailable)
+	}
 
 	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
 	if err != nil {

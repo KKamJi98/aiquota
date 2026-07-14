@@ -72,6 +72,19 @@ func padRight(s string, n int) string {
 	return s
 }
 
+// truncate limits plain text to n visible cells. Compact rendering applies
+// color after truncation so an ANSI sequence is never cut in half.
+func truncate(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
+}
+
 // resetLabel describes when a window resets, relative to now.
 func resetLabel(w model.Window, now time.Time) string {
 	if w.ResetsAt.IsZero() {
@@ -149,6 +162,40 @@ func Card(r model.ProviderResult, now time.Time, color bool) []string {
 	return lines
 }
 
+// compactCard renders a borderless summary for terminals narrower than the
+// fixed card. Every returned line fits within width, preventing terminal wrap.
+func compactCard(r model.ProviderResult, now time.Time, color bool, width int) []string {
+	name := capitalize(r.Snapshot.Provider)
+	if name == "" {
+		name = "Unknown"
+	}
+	header := name
+	if r.Snapshot.Plan != "" {
+		header += " " + r.Snapshot.Plan
+	}
+	lines := []string{colorize(truncate(header, width), ansiBold, color)}
+
+	if !r.OK() {
+		return append(lines, colorize(truncate(r.Failure.Label(), width), ansiRed, color))
+	}
+
+	for _, item := range []struct {
+		label  string
+		window model.Window
+	}{
+		{"Session", r.Snapshot.Session},
+		{"Weekly", r.Snapshot.Weekly},
+	} {
+		if !item.window.Present {
+			continue
+		}
+		usage := fmt.Sprintf("%s %d%% left", item.label, item.window.RemainingPercent())
+		lines = append(lines, truncate(usage, width))
+		lines = append(lines, colorize(truncate(resetLabel(item.window, now), width), ansiDim, color))
+	}
+	return lines
+}
+
 // colorizeHeader applies bold to the provider name and dim to the plan without
 // disturbing the pre-computed padding between them.
 func colorizeHeader(padded, name, plan string, color bool) string {
@@ -163,6 +210,10 @@ func colorizeHeader(padded, name, plan string, color bool) string {
 // Render lays out all provider cards for the given terminal width and returns
 // the full string to print. now/savedAt drive the freshness footer.
 func Render(results []model.ProviderResult, termWidth int, color bool, now, savedAt time.Time) string {
+	if termWidth < cardWidth {
+		return renderCompact(results, max(1, termWidth), color, now, savedAt)
+	}
+
 	cards := make([][]string, 0, len(results))
 	for _, r := range results {
 		cards = append(cards, Card(r, now, color))
@@ -195,6 +246,27 @@ func Render(results []model.ProviderResult, termWidth int, color bool, now, save
 			footer = "updated " + FormatCountdown(age) + " ago"
 		}
 		b.WriteString(colorize(footer, ansiDim, color))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func renderCompact(results []model.ProviderResult, width int, color bool, now, savedAt time.Time) string {
+	var b strings.Builder
+	for i, result := range results {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(strings.Join(compactCard(result, now, color, width), "\n"))
+		b.WriteString("\n")
+	}
+
+	if !savedAt.IsZero() {
+		footer := "updated just now"
+		if age := now.Sub(savedAt); age >= time.Second {
+			footer = "updated " + FormatCountdown(age) + " ago"
+		}
+		b.WriteString(colorize(truncate(footer, width), ansiDim, color))
 		b.WriteString("\n")
 	}
 	return b.String()
