@@ -28,13 +28,21 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_ACTION: ${{ github.event.action }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
           RELEASE_NAME: ${{ github.event.release.name }}
           RELEASE_URL: ${{ github.event.release.html_url }}
         run: |
           set -euo pipefail
           case "$EVENT_NAME" in
             push) body="push to ${REF_NAME}: ${COMMIT_MESSAGE:-commit}" ;;
-            pull_request) body="PR merged: ${PR_TITLE:-pull request}" ;;
+            pull_request)
+              if [[ "$PR_ACTION" == "closed" && "$PR_MERGED" == "true" ]]; then
+                body="PR merged: ${PR_TITLE:-pull request}"
+              else
+                body="PR ${PR_ACTION}: ${PR_TITLE:-pull request}"
+              fi
+              ;;
             release) body="release published: ${RELEASE_NAME:-release} ${RELEASE_URL:-}" ;;
             *) body="${EVENT_NAME}" ;;
           esac
