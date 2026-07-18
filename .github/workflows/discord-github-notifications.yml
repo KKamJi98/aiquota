@@ -1,0 +1,44 @@
+name: Discord repository notifications
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    types: [opened, reopened, closed]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  notify:
+    if: github.event_name != 'pull_request' || github.event.action != 'closed' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send event to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_GITHUB_WEBHOOK_URL }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          REF_NAME: ${{ github.ref_name }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            push) body="push to ${REF_NAME}: ${COMMIT_MESSAGE:-commit}" ;;
+            pull_request) body="PR merged: ${PR_TITLE:-pull request}" ;;
+            release) body="release published: ${RELEASE_NAME:-release} ${RELEASE_URL:-}" ;;
+            *) body="${EVENT_NAME}" ;;
+          esac
+          jq -n --arg content "[GitHub] ${REPOSITORY} - ${body} (by ${ACTOR})" '{content: $content}' \
+            | curl --fail-with-body --silent --show-error \
+                -H 'Content-Type: application/json' \
+                -d @- "$DISCORD_WEBHOOK_URL"
