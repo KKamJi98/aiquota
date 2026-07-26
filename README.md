@@ -36,6 +36,43 @@ echo "alias aq='aiquota'" >> ~/.zshrc
 go build -o aiquota ./cmd/aiquota
 ```
 
+### Working on a local checkout
+
+An alias runs whatever binary is already installed, so an edit in your checkout
+does not show up until you reinstall. If you want `aq` to always reflect the
+working tree, replace the alias with a launcher that reinstalls when a source
+file is newer than the installed binary:
+
+```zsh
+aq() {
+  emulate -L zsh
+  local repo="$HOME/path/to/aiquota"
+  local binary="$(go env GOPATH)/bin/aiquota"
+  local source
+  local -a sources=(
+    "$repo/go.mod" "$repo/go.sum"
+    "$repo"/cmd/**/*(N) "$repo"/internal/**/*(N)
+  )
+
+  if [[ ! -x "$binary" ]]; then
+    (cd "$repo" && go install ./cmd/aiquota) || return 1
+  else
+    for source in "${sources[@]}"; do
+      if [[ "$source" -nt "$binary" ]]; then
+        (cd "$repo" && go install ./cmd/aiquota) || return 1
+        break
+      fi
+    done
+  fi
+
+  command "$binary" "$@"
+}
+```
+
+The staleness check costs one glob over `cmd/` and `internal/`, so a cache hit
+stays well under a second. There is no `go:embed` asset outside those trees, so
+every build input is covered.
+
 Requires Go 1.26+, macOS (darwin/arm64), and the native `codex` and `claude`
 CLIs installed and logged in.
 
