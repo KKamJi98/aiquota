@@ -29,6 +29,7 @@ import (
 	"github.com/hinshun/vt10x"
 
 	"github.com/kkamji98/aiquota/internal/model"
+	"github.com/kkamji98/aiquota/internal/procenv"
 )
 
 // Virtual terminal grid size. The child renders into a PTY of roughly this size,
@@ -130,7 +131,7 @@ func (b *syncBuffer) snapshot() (string, bool) {
 // so readiness, timeout, and cancellation kill and reap the process group.
 func probe(ctx context.Context) (string, error) {
 	for _, name := range []string{"claude", "script"} {
-		if _, err := exec.LookPath(name); err != nil {
+		if _, err := procenv.LookPath(name); err != nil {
 			return "", fmt.Errorf("required executable %s unavailable", name)
 		}
 	}
@@ -153,7 +154,10 @@ func probe(ctx context.Context) (string, error) {
 		inputWriterScript(), scriptPipeline())
 	cmd := exec.Command("sh", "-c", pipeline)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	// procenv.Env keeps the shell inside the pipeline from resolving `claude`
+	// through a terminal wrapper shim, which would inject a hook set and register
+	// a session with the terminal on every refresh.
+	cmd.Env = append(procenv.Env(),
 		fmt.Sprintf("COLUMNS=%d", probeCols),
 		fmt.Sprintf("LINES=%d", probeRows),
 		"TERM=xterm-256color")

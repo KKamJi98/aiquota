@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kkamji98/aiquota/internal/model"
+	"github.com/kkamji98/aiquota/internal/procenv"
 )
 
 const (
@@ -55,7 +56,15 @@ func fetch(ctx context.Context) (model.Snapshot, model.FailureCategory) {
 		return model.Snapshot{}, failureForContext(ctx)
 	}
 
-	cmd := exec.Command("codex", "app-server")
+	// Resolve and launch the installed binary, never a terminal wrapper shim: a
+	// shim rewrites the invocation and registers a session with the terminal,
+	// which a read-only quota refresh must not do.
+	commandPath, lookErr := procenv.LookPath("codex")
+	if lookErr != nil {
+		return model.Snapshot{}, model.FailureUnavailable
+	}
+	cmd := exec.Command(commandPath, "app-server")
+	cmd.Env = procenv.Env()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
