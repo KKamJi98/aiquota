@@ -141,6 +141,11 @@ func Card(r model.ProviderResult, now time.Time, color bool) []string {
 			body = append(body, windowLines(w.label, w.window, now, color)...)
 			body = append(body, "")
 		}
+		// Providers without quota windows (e.g. Z.AI: no public quota API)
+		// show their status note instead of an empty card body.
+		if len(body) <= 2 && r.Snapshot.Source != "" {
+			body = append(body, "  "+colorize(truncate(r.Snapshot.Source, innerWidth-2), ansiDim, color))
+		}
 	} else {
 		header := "  " + colorize(name, ansiBold, color)
 		status := "  " + colorize(r.Failure.Label(), ansiRed, color)
@@ -192,6 +197,10 @@ func compactCard(r model.ProviderResult, now time.Time, color bool, width int) [
 		usage := fmt.Sprintf("%s %d%% left", item.label, item.window.RemainingPercent())
 		lines = append(lines, truncate(usage, width))
 		lines = append(lines, colorize(truncate(resetLabel(item.window, now), width), ansiDim, color))
+	}
+	// No quota windows at all: surface the status note (e.g. served model).
+	if !r.Snapshot.Session.Present && !r.Snapshot.Weekly.Present && r.Snapshot.Source != "" {
+		lines = append(lines, colorize(truncate(r.Snapshot.Source, width), ansiDim, color))
 	}
 	return lines
 }
