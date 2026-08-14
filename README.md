@@ -1,7 +1,7 @@
 # aiquota
 
-A fast personal terminal CLI that renders your remaining **Claude** and **Codex**
-subscription quota as a compact two-column card: session (5h) and weekly windows,
+A fast personal terminal CLI that renders your remaining **Claude**, **Codex**,
+and **Z.AI** subscription quota as a compact card: session (5h) and weekly windows,
 percent remaining, and a human-readable reset countdown.
 
 ```
@@ -141,8 +141,8 @@ aq -w -i 300          # watch, refresh every 5 minutes
 aiquota **never reads, writes, refreshes, prints, caches, or transmits** OAuth
 credentials, browser cookies, Keychain values, API keys, or credential files. It
 does not run `login`/`logout`, never refreshes tokens, never opens a browser, and
-never sends a model prompt. It only invokes the installed native CLIs in
-read-only status modes and consumes their output:
+never sends a model prompt. The CLI-backed adapters only invoke the installed
+native CLIs in read-only status modes and consume their output:
 
 - **Codex** (`internal/provider/codex`): spawns `codex app-server` and speaks its
   JSON-RPC protocol - `initialize`, `account/read` with `refreshToken: false`,
@@ -156,6 +156,16 @@ read-only status modes and consumes their output:
   terminal stream, and stops when the complete usage view is parseable. Hard 6s
   timeout; shutdown sends SIGTERM to the child process group, then uses SIGKILL
   only if the bounded grace period expires.
+- **Z.AI** (`internal/provider/zai`): the one adapter that uses an API key
+  instead of a CLI. It reads `ZAI_API_KEY`, then `GLM_API_KEY` from the
+  environment or `~/.hermes/.env`, and uses it only as an in-memory
+  `Authorization` header on read-only HTTPS calls to `api.z.ai`. The key is
+  never logged, cached, printed, persisted, or sent anywhere else. Quota comes
+  from the undocumented monitor endpoint `/api/monitor/usage/quota/limit`
+  (hour-based window to Session, the wider pool to Weekly); when it cannot
+  answer, the adapter falls back to a one-token chat probe that reports only the
+  served model and leaves both windows absent rather than guessing. Hard 15s
+  timeout.
 
 Raw child-process output (JSON-RPC payloads, terminal text) is held only in
 memory and is **never** written to the cache, logs, debug output, or test

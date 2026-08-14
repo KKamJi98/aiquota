@@ -1,14 +1,17 @@
 // Package zai implements the aiquota Provider for a Z.AI GLM Coding Plan
 // subscription.
 //
-// Z.AI exposes no stable quota API: the only authoritative place the 5-hour and
-// weekly credit windows appear is the authenticated web console
-// (z.ai/manage-apikey/subscription). This adapter therefore performs a minimal,
-// read-only HTTP probe with an API key sourced from the standard environment
-// and reports what the platform can actually answer: whether the key is valid
-// and which model the Coding Plan endpoint currently serves (Z.AI silently
-// routes legacy model names such as glm-5.2 to the newest GLM generation).
-// Credit percentages cannot be fabricated, so windows stay absent and the card
+// Quota source. The OpenAI-compatible Coding Plan endpoint exposes nothing
+// usable: no rate-limit response headers, and /v4/usage, /v4/quota and
+// /v4/limits all 404. The credit windows live on a separate monitor API,
+// /api/monitor/usage/quota/limit, which the Z.AI console and the community
+// trackers read. That endpoint is undocumented, so this adapter treats it as
+// best-effort: when it answers with a usable payload the 5-hour and weekly
+// windows are reported verbatim, and when it does not the adapter falls back to
+// a minimal one-token chat probe that reports only whether the key is valid and
+// which model the endpoint currently serves (Z.AI silently routes legacy model
+// names such as glm-5.2 to the newest GLM generation). Credit percentages are
+// never fabricated: on the fallback path the windows stay absent and the card
 // points at the console URL instead of guessing.
 //
 // Auth boundary. Unlike the claude/codex adapters, this package reads one API
@@ -44,8 +47,17 @@ const (
 	envKeyLegacy  = "GLM_API_KEY"
 )
 
-// chatEndpoint is a var so tests can point it at a local httptest server.
-var chatEndpoint = "https://api.z.ai/api/coding/paas/v4/chat/completions"
+// unitHour is the calendar-field code the monitor API uses for hour-based
+// windows, which is how the 5-hour session pool is reported. The remaining
+// codes are undocumented; every other window this plan returns is the wider
+// weekly credit pool, so anything that is not hour-based maps to Weekly.
+const unitHour = 3
+
+// Endpoints are vars so tests can point them at a local httptest server.
+var (
+	chatEndpoint  = "https://api.z.ai/api/coding/paas/v4/chat/completions"
+	quotaEndpoint = "https://api.z.ai/api/monitor/usage/quota/limit"
+)
 
 // Provider queries the Z.AI GLM Coding Plan status in a read-only manner.
 type Provider struct{}
@@ -64,15 +76,37 @@ type chatResponse struct {
 	Model string `json:"model"`
 }
 
+// quotaResponse mirrors the monitor API payload. Only the fields the renderer
+// needs are decoded; credit counts are deliberately dropped because the card
+// shows percentages and reset times, not raw account balances.
+type quotaResponse struct {
+	Data struct {
+		Level  string `json:"level"`
+		Limits []struct {
+			Unit          int   `json:"unit"`
+			Percentage    int   `json:"percentage"`
+			NextResetTime int64 `json:"nextResetTime"`
+		} `json:"limits"`
+	} `json:"data"`
+}
+
 // probeResult is the in-memory outcome of a single probe.
 type probeResult struct {
 	servedModel string
 }
 
-// Fetch validates the configured API key against the Coding Plan endpoint and
-// reports the model currently served. Credit windows are not available through
-// any documented API, so Snapshot windows stay absent by design; the served
-// model rides in Source so no schema change is needed downstream.
+// quotaResult is the in-memory outcome of a single monitor API call.
+type quotaResult struct {
+	plan    string
+	session model.Window
+	weekly  model.Window
+}
+
+// Fetch reports the Coding Plan credit windows from the monitor API. If that
+// undocumented endpoint cannot answer, it degrades to a one-token chat probe
+// that validates the key and names the served model; on that path the windows
+// stay absent and the served model rides in Source, so the renderer shows the
+// status note instead of invented percentages.
 func (*Provider) Fetch(ctx context.Context) (model.Snapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
@@ -80,6 +114,22 @@ func (*Provider) Fetch(ctx context.Context) (model.Snapshot, error) {
 	key := resolveKey()
 	if key == "" {
 		return model.Snapshot{Provider: providerName}, model.NewProviderError(model.FailureNotSignedIn)
+	}
+
+	quota, category := fetchQuota(ctx, key)
+	switch category {
+	case model.FailureNone:
+		return model.Snapshot{
+			Provider:  providerName,
+			Plan:      planLabel(quota.plan),
+			Session:   quota.session,
+			Weekly:    quota.weekly,
+			UpdatedAt: time.Now(),
+			Source:    "z.ai monitor api",
+		}, nil
+	case model.FailureNotSignedIn:
+		// A rejected key will not fare better on the chat endpoint.
+		return model.Snapshot{Provider: providerName}, model.NewProviderError(category)
 	}
 
 	result, category := probe(ctx, key)
@@ -93,6 +143,100 @@ func (*Provider) Fetch(ctx context.Context) (model.Snapshot, error) {
 		UpdatedAt: time.Now(),
 		Source:    "z.ai probe: serving " + result.servedModel,
 	}, nil
+}
+
+// planLabel renders the subscription tier the monitor API reports, e.g. the
+// "pro" level becomes "Coding Plan Pro".
+func planLabel(level string) string {
+	if level == "" {
+		return "Coding Plan"
+	}
+	return "Coding Plan " + strings.ToUpper(level[:1]) + level[1:]
+}
+
+// fetchQuota reads the credit windows from the monitor API. A payload that
+// carries no usable window is reported as FailureUnsupported so the caller can
+// fall back rather than render an empty card.
+func fetchQuota(ctx context.Context, key string) (quotaResult, model.FailureCategory) {
+	body, category := get(ctx, quotaEndpoint, key)
+	if category != model.FailureNone {
+		return quotaResult{}, category
+	}
+
+	var parsed quotaResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return quotaResult{}, model.FailureUnsupported
+	}
+
+	result := quotaResult{plan: parsed.Data.Level}
+	for _, limit := range parsed.Data.Limits {
+		if limit.NextResetTime <= 0 {
+			continue
+		}
+		window := model.Window{
+			Present:     true,
+			UsedPercent: clampPercent(limit.Percentage),
+			ResetsAt:    time.UnixMilli(limit.NextResetTime),
+		}
+		if limit.Unit == unitHour {
+			result.session = window
+		} else {
+			result.weekly = window
+		}
+	}
+	if !result.session.Present && !result.weekly.Present {
+		return quotaResult{}, model.FailureUnsupported
+	}
+	return result, model.FailureNone
+}
+
+// clampPercent keeps a provider-reported percentage inside 0-100. Z.AI can
+// report over 100 when a window is overdrawn, which would render a negative bar.
+func clampPercent(p int) int {
+	switch {
+	case p < 0:
+		return 0
+	case p > 100:
+		return 100
+	default:
+		return p
+	}
+}
+
+// get issues an authenticated read-only GET and returns the response body. The
+// body is held in memory only and is never logged or returned raw on failure.
+func get(ctx context.Context, url, key string) ([]byte, model.FailureCategory) {
+	if ctx.Err() != nil {
+		return nil, model.FailureTimedOut
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, model.FailureUnavailable
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, model.FailureTimedOut
+		}
+		return nil, model.FailureUnavailable
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, probeMaxBody))
+	if err != nil {
+		return nil, model.FailureUnavailable
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return body, model.FailureNone
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return nil, model.FailureNotSignedIn
+	default:
+		return nil, model.FailureUnavailable
+	}
 }
 
 // resolveKey finds the API key without printing it. ZAI_API_KEY wins, then
