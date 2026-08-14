@@ -76,14 +76,16 @@ type chatResponse struct {
 	Model string `json:"model"`
 }
 
-// quotaResponse mirrors the monitor API payload. Only the fields the renderer
-// needs are decoded; credit counts are deliberately dropped because the card
-// shows percentages and reset times, not raw account balances.
+// quotaResponse mirrors the monitor API payload. Only the fields the adapter
+// needs are decoded: the card shows percentages and reset times, and usage is
+// read solely as the window-size check that tells a real limit from an empty
+// entry. Consumed and remaining balances are deliberately dropped.
 type quotaResponse struct {
 	Data struct {
 		Level  string `json:"level"`
 		Limits []struct {
 			Unit          int   `json:"unit"`
+			Usage         int64 `json:"usage"`
 			Percentage    int   `json:"percentage"`
 			NextResetTime int64 `json:"nextResetTime"`
 		} `json:"limits"`
@@ -170,13 +172,18 @@ func fetchQuota(ctx context.Context, key string) (quotaResult, model.FailureCate
 
 	result := quotaResult{plan: parsed.Data.Level}
 	for _, limit := range parsed.Data.Limits {
-		if limit.NextResetTime <= 0 {
+		if limit.Usage <= 0 {
 			continue
 		}
+		// A window untouched since its last reset carries no nextResetTime:
+		// the countdown starts when credits are first spent. The window is
+		// real, so report it and leave the reset time absent.
 		window := model.Window{
 			Present:     true,
 			UsedPercent: clampPercent(limit.Percentage),
-			ResetsAt:    time.UnixMilli(limit.NextResetTime),
+		}
+		if limit.NextResetTime > 0 {
+			window.ResetsAt = time.UnixMilli(limit.NextResetTime)
 		}
 		if limit.Unit == unitHour {
 			result.session = window

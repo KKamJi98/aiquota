@@ -197,20 +197,27 @@ func TestFetchQuotaEmptyLimitsIsUnsupported(t *testing.T) {
 	}
 }
 
-func TestFetchQuotaSkipsWindowsWithoutResetTime(t *testing.T) {
+func TestFetchQuotaKeepsUnusedWindowWithoutResetTime(t *testing.T) {
 	serveQuota(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// The 5-hour entry is the shape z.ai returns right after that window
+		// resets: full credits, no usage, and no nextResetTime. The last entry
+		// declares no window size and is not a real limit.
 		_, _ = w.Write([]byte(`{"data":{"limits":[` +
-			`{"unit":3,"percentage":40,"nextResetTime":0},` +
-			`{"unit":6,"percentage":150,"nextResetTime":1786886533998}],"level":""}}`))
+			`{"unit":3,"usage":12000,"percentage":0},` +
+			`{"unit":6,"usage":60000,"percentage":150,"nextResetTime":1786886533998},` +
+			`{"unit":9,"usage":0,"percentage":40,"nextResetTime":1786886533998}],"level":""}}`))
 	})
 
 	result, category := fetchQuota(context.Background(), "test-key")
 	if category != model.FailureNone {
 		t.Fatalf("expected success, got %s", category)
 	}
-	if result.session.Present {
-		t.Fatal("a window without a reset time must stay absent")
+	if !result.session.Present || result.session.UsedPercent != 0 {
+		t.Fatalf("an unused window must still be reported: %+v", result.session)
+	}
+	if !result.session.ResetsAt.IsZero() {
+		t.Fatalf("expected an absent reset time, got %v", result.session.ResetsAt)
 	}
 	if result.weekly.UsedPercent != 100 {
 		t.Fatalf("expected percentage clamped to 100, got %d", result.weekly.UsedPercent)
