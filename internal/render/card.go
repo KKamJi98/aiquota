@@ -111,7 +111,7 @@ func Card(r model.ProviderResult, now time.Time, color bool) []string {
 	top := "╭" + strings.Repeat("─", innerWidth) + "╮"
 	bottom := "╰" + strings.Repeat("─", innerWidth) + "╯"
 
-	name := capitalize(r.Snapshot.Provider)
+	name := displayName(r.Snapshot.Provider)
 	if name == "" {
 		name = "Unknown"
 	}
@@ -170,7 +170,7 @@ func Card(r model.ProviderResult, now time.Time, color bool) []string {
 // compactCard renders a borderless summary for terminals narrower than the
 // fixed card. Every returned line fits within width, preventing terminal wrap.
 func compactCard(r model.ProviderResult, now time.Time, color bool, width int) []string {
-	name := capitalize(r.Snapshot.Provider)
+	name := displayName(r.Snapshot.Provider)
 	if name == "" {
 		name = "Unknown"
 	}
@@ -279,6 +279,15 @@ func renderCompact(results []model.ProviderResult, width int, color bool, now, s
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// displayName returns the card title for a provider id. Ids are lower-case, so
+// most are title-cased; ids whose brand is not a plain word are spelled out.
+func displayName(provider string) string {
+	if provider == "zai" {
+		return "Z.AI"
+	}
+	return capitalize(provider)
 }
 
 // capitalize upper-cases the first rune of s (ASCII provider ids only).

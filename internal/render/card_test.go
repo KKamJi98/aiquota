@@ -189,6 +189,21 @@ func TestCardAbsentWindowIsOmitted(t *testing.T) {
 	}
 }
 
+func TestCardTitleSpellsOutBrandIds(t *testing.T) {
+	// The zai id is a brand, not a word: title-casing it to "Zai" misnames it.
+	now := time.Unix(1_700_000_000, 0)
+	out := strings.Join(Card(healthy("zai", "Coding Plan Pro", now), now, false), "\n")
+	if !strings.Contains(out, "Z.AI") {
+		t.Errorf("zai card should be titled Z.AI:\n%s", out)
+	}
+	if strings.Contains(out, "Zai") {
+		t.Errorf("zai card must not be title-cased to Zai:\n%s", out)
+	}
+	if got := displayName("claude"); got != "Claude" {
+		t.Errorf("other ids stay title-cased: got %q, want %q", got, "Claude")
+	}
+}
+
 func BenchmarkRender(b *testing.B) {
 	now := time.Unix(1_700_000_000, 0)
 	results := []model.ProviderResult{
