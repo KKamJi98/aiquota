@@ -204,6 +204,64 @@ func TestCardTitleSpellsOutBrandIds(t *testing.T) {
 	}
 }
 
+func TestCardPlanLabelIsCapitalized(t *testing.T) {
+	// Providers report the tier verbatim ("team" from the Codex app-server), but
+	// the card is a display surface: the plan reads as a proper label.
+	now := time.Unix(1_700_000_000, 0)
+	cases := []struct {
+		plan string
+		want string
+	}{
+		{"team", "Team"},
+		{"Coding Plan Pro", "Coding Plan Pro"},
+	}
+	for _, c := range cases {
+		out := strings.Join(Card(healthy("codex", c.plan, now), now, false), "\n")
+		if !strings.Contains(out, c.want) {
+			t.Errorf("plan %q should render as %q:\n%s", c.plan, c.want, out)
+		}
+	}
+}
+
+func TestResetLabelForPassedWindow(t *testing.T) {
+	// A reset time already in the past means the data predates the reset, not
+	// that the window resets this instant.
+	now := time.Unix(1_700_000_000, 0)
+	w := model.Window{Present: true, UsedPercent: 91, ResetsAt: now.Add(-5 * time.Hour)}
+	if got, want := resetLabel(w, now), "reset passed"; got != want {
+		t.Errorf("resetLabel for a past reset: got %q, want %q", got, want)
+	}
+}
+
+func TestRenderStaleProviderIsNamedInFooter(t *testing.T) {
+	// A provider that failed this run keeps its last good snapshot, so the card
+	// numbers can be hours old while the cache itself was just written.
+	now := time.Unix(1_700_000_000, 0)
+	fresh := healthy("claude", "Team", now)
+	fresh.Snapshot.UpdatedAt = now
+	stale := healthy("zai", "Coding Plan Pro", now)
+	stale.Snapshot.UpdatedAt = now.Add(-6 * time.Hour)
+
+	out := Render([]model.ProviderResult{fresh, stale}, 120, false, now, now)
+
+	if !strings.Contains(out, "zai 6h old") {
+		t.Errorf("footer should name the stale provider and its age:\n%s", out)
+	}
+	if strings.Contains(out, "claude 0s old") || strings.Contains(out, "claude ") {
+		t.Errorf("a fresh provider must not appear in the stale footer:\n%s", out)
+	}
+}
+
+func TestRenderUnknownUpdateTimeIsNotReportedStale(t *testing.T) {
+	// A snapshot without UpdatedAt says nothing about its age; guessing "stale"
+	// from a zero value would flag every provider that omits the field.
+	now := time.Unix(1_700_000_000, 0)
+	out := Render([]model.ProviderResult{healthy("claude", "Team", now)}, 120, false, now, now)
+	if strings.Contains(out, "old") {
+		t.Errorf("unknown update time must not be reported as stale:\n%s", out)
+	}
+}
+
 func BenchmarkRender(b *testing.B) {
 	now := time.Unix(1_700_000_000, 0)
 	results := []model.ProviderResult{

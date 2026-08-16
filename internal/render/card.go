@@ -17,6 +17,11 @@ const (
 	gap        = "  " // spacing between side-by-side cards
 )
 
+// staleAfter is how far a provider snapshot may lag the render before the footer
+// calls it out. A plain invocation serves the cache for cache.FreshFor (20s), so
+// the threshold sits above that and only flags a genuinely carried-over snapshot.
+const staleAfter = time.Minute
+
 // FormatCountdown renders a positive duration as a compact two-unit string,
 // e.g. "45s", "12m", "3h 12m", "5d 4h". Non-positive durations render as "now".
 func FormatCountdown(d time.Duration) string {
@@ -85,10 +90,15 @@ func truncate(s string, n int) string {
 	return string(runes[:n])
 }
 
-// resetLabel describes when a window resets, relative to now.
+// resetLabel describes when a window resets, relative to now. A reset time that
+// has already passed means the snapshot predates it, so the label says so rather
+// than counting down to "now" as if the window were resetting this instant.
 func resetLabel(w model.Window, now time.Time) string {
 	if w.ResetsAt.IsZero() {
 		return "resets n/a"
+	}
+	if !w.ResetsAt.After(now) {
+		return "reset passed"
 	}
 	return "resets in " + FormatCountdown(w.ResetsAt.Sub(now))
 }
@@ -119,11 +129,11 @@ func Card(r model.ProviderResult, now time.Time, color bool) []string {
 	var body []string
 	if r.OK() {
 		header := "  " + colorize(name, ansiBold, color)
-		if r.Snapshot.Plan != "" {
+		if plan := displayPlan(r.Snapshot.Plan); plan != "" {
 			// right-align the plan within the inner width
 			left := "  " + name
-			padded := left + strings.Repeat(" ", max(1, innerWidth-2-visibleLen(name)-visibleLen(r.Snapshot.Plan))) + r.Snapshot.Plan
-			header = colorizeHeader(padded, name, r.Snapshot.Plan, color)
+			padded := left + strings.Repeat(" ", max(1, innerWidth-2-visibleLen(name)-visibleLen(plan))) + plan
+			header = colorizeHeader(padded, name, plan, color)
 		}
 		body = append(body, header, "")
 		// Only present windows are shown; a provider may expose just one (e.g.
@@ -175,8 +185,8 @@ func compactCard(r model.ProviderResult, now time.Time, color bool, width int) [
 		name = "Unknown"
 	}
 	header := name
-	if r.Snapshot.Plan != "" {
-		header += " " + r.Snapshot.Plan
+	if plan := displayPlan(r.Snapshot.Plan); plan != "" {
+		header += " " + plan
 	}
 	lines := []string{colorize(truncate(header, width), ansiBold, color)}
 
@@ -250,11 +260,7 @@ func Render(results []model.ProviderResult, termWidth int, color bool, now, save
 	}
 
 	if !savedAt.IsZero() {
-		footer := "updated just now"
-		if age := now.Sub(savedAt); age >= time.Second {
-			footer = "updated " + FormatCountdown(age) + " ago"
-		}
-		b.WriteString(colorize(footer, ansiDim, color))
+		b.WriteString(colorize(footerText(results, now, savedAt), ansiDim, color))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -271,14 +277,47 @@ func renderCompact(results []model.ProviderResult, width int, color bool, now, s
 	}
 
 	if !savedAt.IsZero() {
-		footer := "updated just now"
-		if age := now.Sub(savedAt); age >= time.Second {
-			footer = "updated " + FormatCountdown(age) + " ago"
-		}
-		b.WriteString(colorize(truncate(footer, width), ansiDim, color))
+		b.WriteString(colorize(truncate(footerText(results, now, savedAt), width), ansiDim, color))
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// displayPlan renders a provider-reported tier as a label. Providers pass the
+// tier through verbatim (the Codex app-server reports "team"), so the card is
+// where it becomes a proper name; multi-word plans keep their own casing.
+func displayPlan(plan string) string { return capitalize(plan) }
+
+// footerText renders the freshness line: how old the cache file is, plus any
+// provider whose own snapshot lags well behind it. A provider that failed this
+// run keeps its last good snapshot (see cache.Merge), so the card can show
+// hours-old numbers under a cache that was written seconds ago.
+func footerText(results []model.ProviderResult, now, savedAt time.Time) string {
+	footer := "updated just now"
+	if age := now.Sub(savedAt); age >= time.Second {
+		footer = "updated " + FormatCountdown(age) + " ago"
+	}
+	if stale := staleNote(results, now); stale != "" {
+		footer += " - " + stale
+	}
+	return footer
+}
+
+// staleNote names each provider whose snapshot is older than staleAfter, e.g.
+// "zai 6h old". A snapshot with no UpdatedAt says nothing about its age and is
+// left out rather than guessed at.
+func staleNote(results []model.ProviderResult, now time.Time) string {
+	notes := make([]string, 0, len(results))
+	for _, r := range results {
+		updated := r.Snapshot.UpdatedAt
+		if !r.OK() || updated.IsZero() {
+			continue
+		}
+		if age := now.Sub(updated); age >= staleAfter {
+			notes = append(notes, r.Snapshot.Provider+" "+FormatCountdown(age)+" old")
+		}
+	}
+	return strings.Join(notes, ", ")
 }
 
 // displayName returns the card title for a provider id. Ids are lower-case, so
