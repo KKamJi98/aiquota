@@ -129,6 +129,39 @@ func TestParseUsageOnlyOneWindowIsUnsupported(t *testing.T) {
 	assertCategory(t, err, model.FailureUnsupported)
 }
 
+// bannerFixture prepends the CLI's startup banner line, which names the
+// subscription tier after the model and effort. The /usage panel itself carries
+// no plan, so the banner is the only place it appears in a capture.
+const bannerFixture = "\x1b[38;5;153m▝▜█████▛▘\x1b[39m Opus 5 (1M context) with xhigh effort · Claude Team\n" + healthyFixture
+
+func TestSnapshotFromReadsPlanFromScrolledOffBanner(t *testing.T) {
+	// The banner leaves the screen grid once /usage renders, so the plan has to
+	// come from the raw stream while the windows still come from the screen.
+	c := screenCapture{screen: healthyFixture, stream: bannerFixture}
+	snap, err := snapshotFrom(c, time.Now())
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+	if got, want := snap.Plan, "Team"; got != want {
+		t.Errorf("Plan = %q, want %q", got, want)
+	}
+	if !snap.Session.Present || !snap.Weekly.Present {
+		t.Errorf("windows must still be read from the screen: %+v", snap)
+	}
+}
+
+func TestSnapshotFromWithoutBannerLeavesPlanEmpty(t *testing.T) {
+	// A stream with no banner must not have a plan invented for it.
+	c := screenCapture{screen: healthyFixture, stream: healthyFixture}
+	snap, err := snapshotFrom(c, time.Now())
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+	if snap.Plan != "" {
+		t.Errorf("Plan = %q, want empty when the banner is absent", snap.Plan)
+	}
+}
+
 func assertCategory(t *testing.T, err error, want model.FailureCategory) {
 	t.Helper()
 	if err == nil {

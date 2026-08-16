@@ -22,13 +22,13 @@ func TestLiveProbeSafeEvidence(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	raw, err := probe(ctx)
+	capture, err := probe(ctx)
 	if err != nil {
 		t.Fatalf("probe failed before parsing: %T", err)
 	}
 
-	text := strings.ToLower(sanitize(raw))
-	parseErr := validateHealthyProbe(raw)
+	text := strings.ToLower(sanitize(capture.screen))
+	parseErr := validateHealthyProbe(capture.screen)
 	category := model.FailureNone
 	var providerErr *model.ProviderError
 	if errors.As(parseErr, &providerErr) {

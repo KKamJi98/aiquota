@@ -34,6 +34,12 @@ var (
 	// "Jul 18 at 5pm" and "Jul 18, 4:59pm".
 	reResetDate  = regexp.MustCompile(`(?i)([A-Z][a-z]{2})\s+(\d{1,2})`)
 	reResetClock = regexp.MustCompile(`(?i)(\d{1,2}(?::\d{2})?\s*[ap]m)`)
+
+	// The startup banner names the subscription tier after the model and effort
+	// ("... with xhigh effort · Claude Team"). Only the published tier names are
+	// accepted: sanitize() flattens the capture to one line, so a looser match
+	// would swallow whatever UI text follows the banner.
+	rePlan = regexp.MustCompile(`(?i)·\s*Claude\s+(Free|Pro|Max(?:\s+\d+x)?|Team|Enterprise)\b`)
 )
 
 // signedOutMarkers are phrases the CLI shows when there is no usable subscription
@@ -77,6 +83,30 @@ func parseUsageAt(raw string, now time.Time) (model.Snapshot, error) {
 		UpdatedAt: now,
 		Source:    "claude /usage",
 	}, nil
+}
+
+// snapshotFrom builds the Snapshot for one probe run. The quota windows are read
+// from the rendered screen, which holds the final /usage view; the plan is read
+// from the raw stream, because the banner that names it has scrolled out of the
+// screen grid by the time /usage draws.
+func snapshotFrom(c screenCapture, now time.Time) (model.Snapshot, error) {
+	snap, err := parseUsageAt(c.screen, now)
+	if err != nil {
+		return model.Snapshot{}, err
+	}
+	snap.Plan = parsePlan(sanitize(c.stream))
+	return snap, nil
+}
+
+// parsePlan reads the subscription tier from the startup banner. A capture whose
+// banner never appeared leaves the plan empty rather than having one guessed
+// from elsewhere in the text.
+func parsePlan(text string) string {
+	m := rePlan.FindStringSubmatch(text)
+	if m == nil {
+		return ""
+	}
+	return m[1]
 }
 
 // parseWindow locates the labeled window (e.g. "current session", "current

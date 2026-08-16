@@ -75,11 +75,19 @@ func (Provider) Fetch(ctx context.Context) (model.Snapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
-	raw, err := probe(ctx)
+	capture, err := probe(ctx)
 	if err != nil {
 		return model.Snapshot{}, safeProbeFailure(ctx, err)
 	}
-	return parseUsage(raw)
+	return snapshotFrom(capture, time.Now())
+}
+
+// screenCapture is one probe run's output: the reconstructed screen the window
+// parser reads, and the raw PTY stream it was rebuilt from. The stream still
+// holds lines that have scrolled off the screen grid, such as the startup banner.
+type screenCapture struct {
+	screen string
+	stream string
 }
 
 func safeProbeFailure(ctx context.Context, _ error) *model.ProviderError {
@@ -129,10 +137,10 @@ func (b *syncBuffer) snapshot() (string, bool) {
 // while a real shell writer does. The CLI runs from the user's home directory
 // with tools disabled. The interactive view normally does not exit on its own,
 // so readiness, timeout, and cancellation kill and reap the process group.
-func probe(ctx context.Context) (string, error) {
+func probe(ctx context.Context) (screenCapture, error) {
 	for _, name := range []string{"claude", "script"} {
 		if _, err := procenv.LookPath(name); err != nil {
-			return "", fmt.Errorf("required executable %s unavailable", name)
+			return screenCapture{}, fmt.Errorf("required executable %s unavailable", name)
 		}
 	}
 
@@ -143,7 +151,7 @@ func probe(ctx context.Context) (string, error) {
 	// and tools are disabled anyway.
 	dir, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("probe home dir: %w", err)
+		return screenCapture{}, fmt.Errorf("probe home dir: %w", err)
 	}
 
 	// Keep the proven real-shell input pipeline. If the script/Claude side exits,
@@ -165,9 +173,9 @@ func probe(ctx context.Context) (string, error) {
 	return runProbeCommand(ctx, cmd)
 }
 
-func runProbeCommand(ctx context.Context, cmd *exec.Cmd) (string, error) {
+func runProbeCommand(ctx context.Context, cmd *exec.Cmd) (screenCapture, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return screenCapture{}, err
 	}
 
 	out := syncBuffer{maxBytes: maxCaptureBytes}
@@ -179,7 +187,7 @@ func runProbeCommand(ctx context.Context, cmd *exec.Cmd) (string, error) {
 	// descendants are stopped together on every completion path.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("start claude probe: %w", err)
+		return screenCapture{}, fmt.Errorf("start claude probe: %w", err)
 	}
 	pgid := cmd.Process.Pid
 	commandWait := make(chan error, 1)
@@ -189,7 +197,7 @@ func runProbeCommand(ctx context.Context, cmd *exec.Cmd) (string, error) {
 	process := probeProcess{pgid: pgid, commandWait: commandWait}
 
 	if err := ctx.Err(); err != nil {
-		return stopProbe(process, "", err)
+		return captured(stopProbe(process, "", err))
 	}
 
 	// Poll only after the command has been submitted. A complete parse is the
@@ -205,31 +213,39 @@ func runProbeCommand(ctx context.Context, cmd *exec.Cmd) (string, error) {
 		select {
 		case err := <-commandWait:
 			if err != nil {
-				return stopProbeAfterExit(process, true, "", fmt.Errorf("claude probe exited before ready: %w", err))
+				return captured(stopProbeAfterExit(process, true, "", fmt.Errorf("claude probe exited before ready: %w", err)))
 			}
-			return stopProbeAfterExit(process, true, "", errors.New("claude probe exited before ready"))
+			return captured(stopProbeAfterExit(process, true, "", errors.New("claude probe exited before ready")))
 		case <-captureDone.C:
 			raw, overflow := out.snapshot()
 			if overflow {
-				return stopProbe(process, "", errors.New("claude probe capture exceeded safe limit"))
+				return captured(stopProbe(process, "", errors.New("claude probe capture exceeded safe limit")))
 			}
-			return stopProbe(process, reconstructScreen(raw), nil)
+			screen, err := stopProbe(process, reconstructScreen(raw), nil)
+			return screenCapture{screen: screen, stream: raw}, err
 		case <-poll.C:
 			if time.Since(startedAt) < initDelay+submitDelay {
 				continue
 			}
 			raw, overflow := out.snapshot()
 			if overflow {
-				return stopProbe(process, "", errors.New("claude probe capture exceeded safe limit"))
+				return captured(stopProbe(process, "", errors.New("claude probe capture exceeded safe limit")))
 			}
 			candidate := reconstructScreen(raw)
 			if usageScreenReady(candidate) {
-				return stopProbe(process, candidate, nil)
+				screen, err := stopProbe(process, candidate, nil)
+				return screenCapture{screen: screen, stream: raw}, err
 			}
 		case <-ctx.Done():
-			return stopProbe(process, "", ctx.Err())
+			return captured(stopProbe(process, "", ctx.Err()))
 		}
 	}
+}
+
+// captured adapts the screen-only shutdown helpers to the capture the caller
+// expects. It is used on the failure paths, where there is no stream to keep.
+func captured(screen string, err error) (screenCapture, error) {
+	return screenCapture{screen: screen}, err
 }
 
 type probeProcess struct {
