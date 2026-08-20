@@ -113,6 +113,43 @@ func TestParseUsageNotSignedIn(t *testing.T) {
 	assertCategory(t, err, model.FailureNotSignedIn)
 }
 
+// loginExpiringFixture mirrors the banner a signed-in CLI prints once its
+// credential is near expiry. The renew nudge carries login wording, and the
+// same capture still holds both quota windows, so it must parse as healthy.
+const loginExpiringFixture = "\x1b[38;5;153mWelcome to Claude Code\x1b[39m\n" +
+	"\u26a0 Your login expires in 3 days \u00b7 run /login to renew\n" +
+	"Current session\n" +
+	"\x1b[38;5;114m\u2588\u2588\u2588\u2588\u2588\u258c\x1b[39m 52% used   Resets 11:40pm (Asia/Seoul)\n" +
+	"Current week (all models)\n" +
+	"\x1b[38;5;114m\u2588\u2588\u2588\u258c\x1b[39m 74% used   Resets Aug 22 at 5pm (Asia/Seoul)\n"
+
+func TestParseUsageLoginExpiringStillParses(t *testing.T) {
+	seoul, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	now := time.Date(2026, time.August, 20, 15, 0, 0, 0, seoul)
+
+	snap, err := parseUsageAt(loginExpiringFixture, now)
+	if err != nil {
+		t.Fatalf("expected success despite the renew nudge, got error: %v", err)
+	}
+	if !snap.Session.Present || snap.Session.UsedPercent != 52 {
+		t.Errorf("Session = %+v, want present with 52%%", snap.Session)
+	}
+	if !snap.Weekly.Present || snap.Weekly.UsedPercent != 74 {
+		t.Errorf("Weekly = %+v, want present with 74%%", snap.Weekly)
+	}
+}
+
+// A signed-out capture has no quota windows, so the marker path still applies
+// even when the only login wording is the renew nudge phrasing.
+func TestParseUsageRenewWordingWithoutWindows(t *testing.T) {
+	const fixture = "Claude Code\nPlease log in to continue.\nrun /login to renew\n"
+	_, err := parseUsageAt(fixture, time.Now())
+	assertCategory(t, err, model.FailureNotSignedIn)
+}
+
 func TestParseUsageUnparseable(t *testing.T) {
 	// A capture with no recognizable quota windows must be reported as
 	// unsupported, never guessed.

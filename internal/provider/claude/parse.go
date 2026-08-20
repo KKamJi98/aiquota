@@ -43,16 +43,22 @@ var (
 )
 
 // signedOutMarkers are phrases the CLI shows when there is no usable subscription
-// session. They are matched case-insensitively against the sanitized capture.
+// session. They are matched case-insensitively against the sanitized capture,
+// and only after window parsing has failed: a signed-in CLI can print login
+// wording too, so a marker alone does not mean there is no session.
 // NOTE: these are best-effort. The healthy and unparseable paths are verified
 // against real captures; the exact signed-out wording is not (forcing a real
 // logout would touch credentials, which the auth boundary forbids).
+//
+// "run /login" is deliberately absent. A signed-in CLI whose credential is
+// close to expiry prints "Your login expires in N days - run /login to renew"
+// in its startup banner, which made every probe report NotSignedIn while the
+// same capture carried both usage windows.
 var signedOutMarkers = []string{
 	"sign in to claude",
 	"please sign in",
 	"log in to claude",
 	"please log in",
-	"run /login",
 	"claude login",
 	"not signed in",
 	"not authenticated",
@@ -62,27 +68,31 @@ var signedOutMarkers = []string{
 // CLI prints without a full date, resolve deterministically in tests.
 func parseUsageAt(raw string, now time.Time) (model.Snapshot, error) {
 	text := sanitize(raw)
-	lower := strings.ToLower(text)
 
+	// Windows first. A capture that carries both quota windows came from a
+	// signed-in CLI by construction, so it must not be discarded over login
+	// wording that appears elsewhere on the screen.
+	session, sOK := parseWindow(text, "current session", now)
+	weekly, wOK := parseWindow(text, "current week", now)
+	if sOK && wOK {
+		return model.Snapshot{
+			Provider:  "claude",
+			Session:   session,
+			Weekly:    weekly,
+			UpdatedAt: now,
+			Source:    "claude /usage",
+		}, nil
+	}
+
+	// No usable windows. Now a signed-out marker explains why.
+	lower := strings.ToLower(text)
 	for _, m := range signedOutMarkers {
 		if strings.Contains(lower, m) {
 			return model.Snapshot{}, model.NewProviderError(model.FailureNotSignedIn)
 		}
 	}
 
-	session, sOK := parseWindow(text, "current session", now)
-	weekly, wOK := parseWindow(text, "current week", now)
-	if !sOK || !wOK {
-		return model.Snapshot{}, model.NewProviderError(model.FailureUnsupported)
-	}
-
-	return model.Snapshot{
-		Provider:  "claude",
-		Session:   session,
-		Weekly:    weekly,
-		UpdatedAt: now,
-		Source:    "claude /usage",
-	}, nil
+	return model.Snapshot{}, model.NewProviderError(model.FailureUnsupported)
 }
 
 // snapshotFrom builds the Snapshot for one probe run. The quota windows are read
