@@ -17,12 +17,24 @@ import (
 )
 
 const (
-	providerName     = "codex"
-	snapshotSource   = "codex app-server"
-	appServerTimeout = 2 * time.Second
-	minutesPerWeek   = 7 * 24 * 60
-	weeklyTolerance  = 24 * 60
+	providerName    = "codex"
+	snapshotSource  = "codex app-server"
+	minutesPerWeek  = 7 * 24 * 60
+	weeklyTolerance = 24 * 60
 )
+
+// appServerTimeout is the ceiling for the whole app-server exchange: spawn,
+// initialize, account/read, account/rateLimits/read.
+//
+// Spawn and the first two calls are local and cost about 40ms together.
+// account/rateLimits/read is a network round trip, and measured over five runs
+// it took 1.62s to 2.16s with a 2.06s median, which put the total median at
+// 2.11s. The previous 2s ceiling therefore expired on more than half of all
+// refreshes and the card fell back to a stale snapshot. Six seconds leaves
+// roughly 3x headroom over that median and matches the Claude probe ceiling,
+// while staying inside the 8s budget the refresh path allows for all providers
+// running concurrently.
+const appServerTimeout = 6 * time.Second
 
 // Provider queries the installed Codex app-server in read-only mode.
 type Provider struct{}
