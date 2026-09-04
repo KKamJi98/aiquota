@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -208,6 +209,20 @@ func TestUsageScreenReady(t *testing.T) {
 	}
 	if !usageScreenReady("Please sign in to Claude to continue") {
 		t.Fatal("recognized signed-out screen should be ready")
+	}
+}
+
+func TestScriptPipelineSizesPTYToProbeGrid(t *testing.T) {
+	// `script` under a non-tty parent hands the CLI an 80x24 PTY, which clips
+	// the /usage view to a scrollable panel that hides the weekly window. The
+	// pipeline must resize the PTY to the same grid the capture is replayed on.
+	pipeline := scriptPipeline()
+	want := fmt.Sprintf("stty rows %d cols %d", probeRows, probeCols)
+	if !strings.Contains(pipeline, want) {
+		t.Fatalf("scriptPipeline() = %q, want it to contain %q", pipeline, want)
+	}
+	if !strings.Contains(pipeline, `exec claude --disallowedTools`) {
+		t.Fatalf("scriptPipeline() = %q, must still exec the CLI with tools disabled", pipeline)
 	}
 }
 

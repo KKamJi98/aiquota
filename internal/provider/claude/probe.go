@@ -32,12 +32,19 @@ import (
 	"github.com/kkamji98/aiquota/internal/procenv"
 )
 
-// Virtual terminal grid size. The child renders into a PTY of roughly this size,
-// and the same size is used to replay the captured byte stream so the final
-// screen is reconstructed faithfully.
+// Virtual terminal grid size. The PTY that `script` allocates is resized to
+// exactly this grid with `stty` before the CLI starts, and the same size is used
+// to replay the captured byte stream so the final screen is reconstructed
+// faithfully. Without the explicit resize, `script` running under a non-tty
+// parent hands the CLI an 80x24 terminal, and the /usage view then clips to a
+// scrollable 24-row panel: the session block lands on the last visible row and
+// the weekly block never appears, so the parse degrades to unsupported. The
+// view grew past 24 rows in CLI 2.1.26x, when a per-session cost summary and a
+// plugin footprint table were placed above the quota windows. The row count
+// leaves headroom for that table, which lists one line per installed plugin.
 const (
 	probeCols       = 120
-	probeRows       = 50
+	probeRows       = 80
 	maxCaptureBytes = 4 << 20
 )
 
@@ -315,12 +322,14 @@ func reconstructScreen(raw string) string {
 }
 
 // scriptPipeline returns the platform-appropriate `script` invocation as a
-// shell fragment that runs `claude` with tools disabled inside a PTY. BSD/macOS takes
-// the command as trailing args (so `*` stays literal); util-linux takes it as a
-// single `-c` shell string (so `*` is single-quoted against globbing).
+// shell fragment that runs `claude` with tools disabled inside a PTY. A shell
+// inside the PTY first sizes it with `stty rows/cols` (the CLI reads the PTY's
+// window size, not COLUMNS/LINES) and then execs the CLI. BSD/macOS takes the
+// command as trailing args; util-linux takes it as a single `-c` shell string.
+// In both forms `*` sits inside quotes so it stays literal.
 func scriptPipeline() string {
 	if runtime.GOOS == "darwin" {
-		return `script -q /dev/null claude --disallowedTools '*'`
+		return fmt.Sprintf(`script -q /dev/null sh -c 'stty rows %d cols %d; exec claude --disallowedTools "*"'`, probeRows, probeCols)
 	}
-	return `script -q -c "claude --disallowedTools '*'" /dev/null`
+	return fmt.Sprintf(`script -q -c "stty rows %d cols %d; exec claude --disallowedTools '*'" /dev/null`, probeRows, probeCols)
 }

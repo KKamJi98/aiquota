@@ -150,10 +150,15 @@ native CLIs in read-only status modes and consume their output:
   actual `windowDurationMins`, not field order. Hard 2s timeout.
 - **Claude** (`internal/provider/claude`): the `claude` CLI has no stable JSON
   quota command, so this drives the interactive `/usage` view read-only through a
-  PTY (allocated via the system `script` binary) with tools disabled. It runs
-  from the user's home directory so slash-command input works consistently on
-  Linux without loading project instructions, captures only a bounded in-memory
-  terminal stream, and stops when the complete usage view is parseable. Hard 6s
+  PTY (allocated via the system `script` binary) with tools disabled. The PTY is
+  sized with `stty rows 80 cols 120` before the CLI starts, because `script`
+  under a non-tty parent otherwise hands the CLI an 80x24 terminal and the
+  `/usage` view (which now carries a session cost summary and a plugin footprint
+  table above the quota windows) clips to a scrollable panel that hides the
+  weekly window. It runs from the user's home directory so slash-command input
+  works consistently on Linux without loading project instructions, captures
+  only a bounded in-memory terminal stream, and stops when the complete usage
+  view is parseable. Hard 6s
   timeout; shutdown sends SIGTERM to the child process group, then uses SIGKILL
   only if the bounded grace period expires.
 - **Z.AI** (`internal/provider/zai`): the one adapter that uses an API key
