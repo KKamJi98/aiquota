@@ -18,14 +18,17 @@ type jsonWindow struct {
 // jsonProvider is the safe per-provider JSON payload: only normalized,
 // non-sensitive fields, plus a failure category when unhealthy.
 type jsonProvider struct {
-	Provider  string      `json:"provider"`
-	Plan      string      `json:"plan,omitempty"`
-	OK        bool        `json:"ok"`
-	Failure   string      `json:"failure,omitempty"`
-	Session   *jsonWindow `json:"session,omitempty"`
-	Weekly    *jsonWindow `json:"weekly,omitempty"`
-	Source    string      `json:"source,omitempty"`
-	UpdatedAt *time.Time  `json:"updated_at,omitempty"`
+	Provider string `json:"provider"`
+	Plan     string `json:"plan,omitempty"`
+	OK       bool   `json:"ok"`
+	Failure  string `json:"failure,omitempty"`
+	// LastFailure names why a healthy snapshot is carried over from an older
+	// refresh; see model.ProviderResult.LastFailure.
+	LastFailure string      `json:"last_failure,omitempty"`
+	Session     *jsonWindow `json:"session,omitempty"`
+	Weekly      *jsonWindow `json:"weekly,omitempty"`
+	Source      string      `json:"source,omitempty"`
+	UpdatedAt   *time.Time  `json:"updated_at,omitempty"`
 }
 
 func toJSONWindow(w model.Window) *jsonWindow {
@@ -56,6 +59,7 @@ func jsonOutput(results []model.ProviderResult, savedAt time.Time, compact bool)
 		if !r.OK() {
 			jp.Failure = string(r.Failure)
 		} else {
+			jp.LastFailure = string(r.LastFailure)
 			jp.Session = toJSONWindow(r.Snapshot.Session)
 			jp.Weekly = toJSONWindow(r.Snapshot.Weekly)
 			if !r.Snapshot.UpdatedAt.IsZero() {

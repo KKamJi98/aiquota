@@ -95,6 +95,48 @@ func TestMergeFailedWithNoPriorRecordsFailure(t *testing.T) {
 	}
 }
 
+func TestMergeKeptPriorRecordsLastFailure(t *testing.T) {
+	// A provider that failed this run keeps its prior numbers, and the merge
+	// records why, so a render can name the failure next to the snapshot's age.
+	prior := []model.ProviderResult{
+		model.Healthy(model.Snapshot{Provider: "claude", Session: model.Window{Present: true, UsedPercent: 35}}),
+	}
+	fresh := []model.ProviderResult{model.Failed("claude", model.FailureUnsupported)}
+
+	merged := Merge(prior, fresh, []string{"claude"})
+	if len(merged) != 1 || !merged[0].OK() || merged[0].Snapshot.Session.UsedPercent != 35 {
+		t.Fatalf("prior healthy value should be kept: %+v", merged)
+	}
+	if merged[0].LastFailure != model.FailureUnsupported {
+		t.Errorf("LastFailure = %q, want %q", merged[0].LastFailure, model.FailureUnsupported)
+	}
+
+	// A later success replaces the kept entry outright, clearing the reason.
+	merged = Merge(merged, []model.ProviderResult{
+		model.Healthy(model.Snapshot{Provider: "claude", Session: model.Window{Present: true, UsedPercent: 5}}),
+	}, []string{"claude"})
+	if merged[0].LastFailure != model.FailureNone || merged[0].Snapshot.Session.UsedPercent != 5 {
+		t.Errorf("fresh success should clear LastFailure: %+v", merged[0])
+	}
+}
+
+func TestMergeRoundtripKeepsLastFailure(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	s := &Store{Path: filepath.Join(t.TempDir(), "cache.json")}
+	kept := model.Healthy(model.Snapshot{Provider: "claude", Session: model.Window{Present: true, UsedPercent: 35}})
+	kept.LastFailure = model.FailureTimedOut
+	if err := s.Save([]model.ProviderResult{kept}, now); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, ok, err := s.Load()
+	if err != nil || !ok {
+		t.Fatalf("Load: ok=%v err=%v", ok, err)
+	}
+	if data.Results[0].LastFailure != model.FailureTimedOut {
+		t.Errorf("LastFailure not persisted: %+v", data.Results[0])
+	}
+}
+
 func BenchmarkLoad(b *testing.B) {
 	now := time.Unix(1_700_000_000, 0)
 	store := &Store{Path: filepath.Join(b.TempDir(), "cache.json")}

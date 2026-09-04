@@ -102,8 +102,9 @@ func (s *Store) Save(results []model.ProviderResult, savedAt time.Time) error {
 
 // Merge combines prior cached results with fresh ones, replacing only providers
 // that succeeded this run. A provider that failed this run keeps its prior cached
-// entry if one exists; otherwise the fresh failure is recorded. Provider order
-// follows `order`.
+// entry if one exists, with the fresh failure category recorded as LastFailure so
+// the render can say why the kept numbers are old; otherwise the fresh failure
+// is recorded. Provider order follows `order`.
 func Merge(prior []model.ProviderResult, fresh []model.ProviderResult, order []string) []model.ProviderResult {
 	priorByName := indexByProvider(prior)
 	freshByName := indexByProvider(fresh)
@@ -116,6 +117,9 @@ func Merge(prior []model.ProviderResult, fresh []model.ProviderResult, order []s
 			out = append(out, f)
 		default:
 			if p, ok := priorByName[name]; ok {
+				if hasFresh && p.OK() {
+					p.LastFailure = f.Failure
+				}
 				out = append(out, p)
 			} else if hasFresh {
 				out = append(out, f)

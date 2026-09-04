@@ -103,10 +103,24 @@ func resetLabel(w model.Window, now time.Time) string {
 	return "resets in " + FormatCountdown(w.ResetsAt.Sub(now))
 }
 
+// expired reports whether a window's reset time is already behind the render.
+// The snapshot then predates a reset, so its percent describes a window that no
+// longer exists and must not be shown as if it were the current one.
+func expired(w model.Window, now time.Time) bool {
+	return !w.ResetsAt.IsZero() && !w.ResetsAt.After(now)
+}
+
 // windowLines renders the two body lines for one present window: a bar+percent
 // line and a reset line. Callers skip absent windows, which are not shown at all.
+// An expired window shows "stale" in place of the bar and percent.
 func windowLines(label string, w model.Window, now time.Time, color bool) []string {
 	name := padRight(label, labelWidth)
+	if expired(w, now) {
+		return []string{
+			"  " + name + colorize("stale", ansiDim, color),
+			"    " + colorize(resetLabel(w, now), ansiDim, color),
+		}
+	}
 	rem := w.RemainingPercent()
 	bar := progressBar(rem, barWidth, color)
 	pct := fmt.Sprintf("%3d%%", rem)
@@ -205,6 +219,9 @@ func compactCard(r model.ProviderResult, now time.Time, color bool, width int) [
 			continue
 		}
 		usage := fmt.Sprintf("%s %d%% left", item.label, item.window.RemainingPercent())
+		if expired(item.window, now) {
+			usage = item.label + " stale"
+		}
 		lines = append(lines, truncate(usage, width))
 		lines = append(lines, colorize(truncate(resetLabel(item.window, now), width), ansiDim, color))
 	}
@@ -304,8 +321,10 @@ func footerText(results []model.ProviderResult, now, savedAt time.Time) string {
 }
 
 // staleNote names each provider whose snapshot is older than staleAfter, e.g.
-// "zai 6h old". A snapshot with no UpdatedAt says nothing about its age and is
-// left out rather than guessed at.
+// "zai 6h old", followed by the category of the refresh that failed and left
+// the snapshot behind when the cache recorded one: "claude 6d 18h old
+// (unsupported)". A snapshot with no UpdatedAt says nothing about its age and
+// is left out rather than guessed at.
 func staleNote(results []model.ProviderResult, now time.Time) string {
 	notes := make([]string, 0, len(results))
 	for _, r := range results {
@@ -314,7 +333,11 @@ func staleNote(results []model.ProviderResult, now time.Time) string {
 			continue
 		}
 		if age := now.Sub(updated); age >= staleAfter {
-			notes = append(notes, r.Snapshot.Provider+" "+FormatCountdown(age)+" old")
+			note := r.Snapshot.Provider + " " + FormatCountdown(age) + " old"
+			if r.LastFailure != model.FailureNone {
+				note += " (" + string(r.LastFailure) + ")"
+			}
+			notes = append(notes, note)
 		}
 	}
 	return strings.Join(notes, ", ")

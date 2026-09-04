@@ -7,6 +7,10 @@ package model
 type ProviderResult struct {
 	Snapshot Snapshot        `json:"snapshot"`
 	Failure  FailureCategory `json:"failure"`
+	// LastFailure is set on a healthy result that was carried over from a prior
+	// cache because the most recent refresh of this provider failed. It names
+	// why the numbers on the card are old; a fresh success clears it.
+	LastFailure FailureCategory `json:"last_failure,omitempty"`
 }
 
 // OK reports whether the result is a healthy snapshot (no failure).

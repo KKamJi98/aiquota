@@ -262,6 +262,49 @@ func TestRenderUnknownUpdateTimeIsNotReportedStale(t *testing.T) {
 	}
 }
 
+func TestRenderStaleFooterNamesLastFailure(t *testing.T) {
+	// When the cache recorded why a snapshot was carried over, the footer says
+	// so next to the age, so "6d old" is never left unexplained.
+	now := time.Unix(1_700_000_000, 0)
+	stale := healthy("claude", "Team", now)
+	stale.Snapshot.UpdatedAt = now.Add(-6 * time.Hour)
+	stale.LastFailure = model.FailureUnsupported
+
+	out := Render([]model.ProviderResult{stale}, 120, false, now, now)
+	if !strings.Contains(out, "claude 6h old (unsupported)") {
+		t.Errorf("footer should name the age and the last failure:\n%s", out)
+	}
+}
+
+func TestCardExpiredWindowHidesPercent(t *testing.T) {
+	// A window whose reset has passed describes a window that no longer exists,
+	// so its percent must not be shown as if it were current.
+	now := time.Unix(1_700_000_000, 0)
+	r := model.Healthy(model.Snapshot{
+		Provider: "claude",
+		Session:  model.Window{Present: true, UsedPercent: 35, ResetsAt: now.Add(-6 * 24 * time.Hour)},
+		Weekly:   model.Window{Present: true, UsedPercent: 55, ResetsAt: now.Add(2 * time.Hour)},
+	})
+
+	wide := strings.Join(Card(r, now, false), "\n")
+	if strings.Contains(wide, "65% left") || !strings.Contains(wide, "Session stale") {
+		t.Errorf("expired session must read stale, not a percent:\n%s", wide)
+	}
+	if !strings.Contains(wide, "reset passed") || !strings.Contains(wide, "45% left") {
+		t.Errorf("the live weekly window must still render normally:\n%s", wide)
+	}
+	for i, line := range Card(r, now, false) {
+		if got := visibleLen(line); got != cardWidth {
+			t.Errorf("line %d width = %d, want %d: %q", i, got, cardWidth, line)
+		}
+	}
+
+	compact := strings.Join(compactCard(r, now, false, 30), "\n")
+	if strings.Contains(compact, "65% left") || !strings.Contains(compact, "Session stale") {
+		t.Errorf("compact expired session must read stale:\n%s", compact)
+	}
+}
+
 func BenchmarkRender(b *testing.B) {
 	now := time.Unix(1_700_000_000, 0)
 	results := []model.ProviderResult{

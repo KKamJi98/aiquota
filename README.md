@@ -187,13 +187,18 @@ fixtures. All committed test fixtures are hand-authored sanitized synthetic data
   cache entry. A provider that fails keeps its last good cached value; if there is
   no prior value, the safe failure is recorded. Writes are atomic (temp + rename).
 - Carried-over snapshots are named: a provider whose kept value is more than a
-  minute behind the render is appended to the footer as `zai 6h old`, so a card
-  full of hours-old numbers is never read as freshly queried. A reset time that
-  has already passed reads `reset passed` rather than counting down to `now`.
+  minute behind the render is appended to the footer as `zai 6h old`, with the
+  category of the refresh that failed and left it behind when one was recorded
+  (`claude 6d 18h old (unsupported)`), so a card full of hours-old numbers is
+  never read as freshly queried and the reason is visible without `--debug`.
+  A window whose reset time has already passed describes a window that no
+  longer exists: its bar and percent are replaced by `stale` and the reset line
+  reads `reset passed` rather than counting down to `now`.
 - All-provider failure: when a prior healthy cache exists, its original save time
   is preserved instead of presenting unchanged data as newly refreshed.
 - Stored fields are non-sensitive only: provider, plan, remaining percent, reset
-  timestamp, source label, updated timestamp, and a safe failure category.
+  timestamp, source label, updated timestamp, and safe failure categories (the
+  current failure, and for a kept snapshot the last refresh's failure).
 
 ## Failure behavior
 
