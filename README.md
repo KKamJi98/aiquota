@@ -5,17 +5,21 @@ and **Z.AI** subscription quota as a compact card: session (5h) and weekly windo
 percent remaining, and a human-readable reset countdown.
 
 ```
-╭────────────────────────────────╮  ╭────────────────────────────────╮
-│  Claude                     Max│  │  Codex                  Prolite│
-│                                │  │                                │
-│  Session ████░░░░░░  43% left  │  │  Session █████████░  85% left  │
-│    resets in 1h 8m             │  │    resets in 18m               │
-│                                │  │                                │
-│  Weekly  ███████░░░  67% left  │  │  Weekly  ███████░░░  71% left  │
-│    resets in 5d 18h            │  │    resets in 5d 17h            │
-╰────────────────────────────────╯  ╰────────────────────────────────╯
+╭────────────────────────────────╮  ╭────────────────────────────────╮  ╭────────────────────────────────╮
+│  Claude                    Team│  │  Codex                     Team│  │  Z.AI           Coding Plan Pro│
+│                                │  │                                │  │                                │
+│  Session ████░░░░░░  43% left  │  │  Session █████████░  85% left  │  │  Session ██████████  99% left  │
+│    resets in 1h 8m             │  │    resets in 18m               │  │    resets in 1h 30m            │
+│                                │  │                                │  │                                │
+│  Weekly  ███████░░░  67% left  │  │  Weekly  ███████░░░  71% left  │  │  Weekly  ███████░░░  72% left  │
+│    resets in 5d 18h            │  │    resets in 5d 17h            │  │    resets in 1d 14h            │
+╰────────────────────────────────╯  ╰────────────────────────────────╯  ╰────────────────────────────────╯
 updated 3s ago
 ```
+
+Cards sit side by side when the terminal is wide enough, stack vertically
+otherwise, and fall back to a borderless compact layout below 34 columns. Each
+card shows only the windows its provider actually reports.
 
 ## Install
 
@@ -73,8 +77,16 @@ The staleness check costs one glob over `cmd/` and `internal/`, so a cache hit
 stays well under a second. There is no `go:embed` asset outside those trees, so
 every build input is covered.
 
-Requires Go 1.26+, macOS (darwin/arm64), and the native `codex` and `claude`
-CLIs installed and logged in.
+Requires Go 1.26+ and, per provider:
+
+- **Claude**: the native `claude` CLI installed, on `PATH`, and logged in.
+- **Codex**: the native `codex` CLI installed, on `PATH`, and logged in.
+- **Z.AI**: a Coding Plan API key in `ZAI_API_KEY` (or the legacy `GLM_API_KEY`),
+  from the environment or `~/.hermes/.env`.
+
+A provider whose prerequisite is missing renders a failed card; the others are
+unaffected. macOS (darwin/arm64) is the primary target; Linux is exercised on
+WSL through the installer below.
 
 ### Install the Mac source build on WSL
 
@@ -147,7 +159,7 @@ native CLIs in read-only status modes and consume their output:
 - **Codex** (`internal/provider/codex`): spawns `codex app-server` and speaks its
   JSON-RPC protocol - `initialize`, `account/read` with `refreshToken: false`,
   then `account/rateLimits/read`. Windows are mapped to Session/Weekly by their
-  actual `windowDurationMins`, not field order. Hard 2s timeout.
+  actual `windowDurationMins`, not field order. Hard 6s timeout.
 - **Claude** (`internal/provider/claude`): the `claude` CLI has no stable JSON
   quota command, so this drives the interactive `/usage` view read-only through a
   PTY (allocated via the system `script` binary) with tools disabled. The PTY is
@@ -202,9 +214,30 @@ fixtures. All committed test fixtures are hand-authored sanitized synthetic data
 
 ## Failure behavior
 
-One provider failing never suppresses the other card. A failed card shows the
+One provider failing never suppresses the other cards. A failed card shows the
 provider name and a short safe status - `Not signed in`, `Timed out`,
-`Unsupported quota response`, or `Unavailable` - and never raw error text.
+`Unsupported quota response`, or `Unavailable` - and never raw error text. When
+a prior good snapshot exists, the card keeps showing it and the footer names
+the age and the failure instead (see cache semantics above).
+
+## Troubleshooting
+
+Start with `aiquota --refresh --debug`. It prints one safe line per provider to
+stderr, e.g. `provider=claude elapsed=2.7s result=ok`, and the `result` value is
+the same category the footer shows in parentheses.
+
+| Symptom | Meaning | What to check |
+| --- | --- | --- |
+| footer `claude 6d 18h old (unsupported)` | Every recent refresh parsed nothing usable, so the card is a carried-over snapshot. | The CLI's `/usage` layout changed. Run `claude` and `/usage` by hand and compare with the `Current session` / `Current week (all models)` lines the parser expects. |
+| footer `... (timed_out)` | The provider did not answer within its ceiling (Claude 6s, Codex 6s, Z.AI 15s). | Slow network or a CLI that hangs on startup. Run the CLI by hand once. |
+| footer `... (unavailable)` or card `Unavailable` | The CLI is not on the `PATH` of the shell that ran `aiquota`, or it exited early. | Non-interactive shells (cron, `ssh host cmd`) often lack the interactive `PATH`. Export the CLI's directory before calling `aiquota`. |
+| card `Not signed in` | The CLI reported no usable session. | Log in with the native CLI. aiquota never runs login itself. |
+| `Session stale` with `reset passed` | The snapshot predates the window's reset, so its percent is not current. | Same cause as the footer note above; the footer says which refresh failed. |
+| Z.AI card shows a model name and no windows | The monitor endpoint did not answer, so the adapter fell back to a one-token probe. | Check the key in `ZAI_API_KEY` / `GLM_API_KEY` and the Z.AI console. |
+
+The cache lives at `~/Library/Caches/aiquota/cache.json` on macOS and
+`~/.cache/aiquota/cache.json` on Linux. Deleting it is always safe; the next
+`aiquota` simply queries again.
 
 ## Testing
 
@@ -219,28 +252,34 @@ Real-account integration probes are opt-in and skipped by the ordinary suite:
 
 ```sh
 AIQUOTA_INTEGRATION=1 go test ./internal/integration/ -v
+AIQUOTA_INTEGRATION=1 go test ./internal/provider/claude/ -run TestLiveProbeSafeEvidence -v
 ```
 
-They spawn the real CLIs read-only and assert only safe outcomes.
+They spawn the real CLIs read-only and assert only safe outcomes. The second
+command logs which parse stages the live Claude `/usage` screen passed
+(`session_seen`, `week_seen`, `percent_markers`, ...), which is the quickest way
+to see where a CLI layout change broke the parser.
 
 ## Known limitations
 
 - **Claude adapter is terminal-scraping**, because no stable JSON quota API is
-  exposed. It parses the `/usage` view's `Current session` / `Current week` lines.
-  If Anthropic changes that view's wording or layout, parsing degrades safely to
-  `Unsupported quota response` rather than guessing. The `Not signed in` wording
-  is best-effort: the real signed-out string was not verified (doing so would
-  require touching credentials), so an unrecognized signed-out state also degrades
-  to `Unsupported`. Plan/tier is not shown for Claude (not reliably present in the
-  view).
+  exposed. It parses the `/usage` view's `Current session` / `Current week (all
+  models)` lines and reads the plan from the startup banner (`... · Claude
+  Team`). If Anthropic changes that view's wording or layout, parsing degrades
+  safely to `Unsupported quota response` rather than guessing, and the card
+  keeps its last good snapshot with the footer naming the failure. The `Not
+  signed in` wording is best-effort: the real signed-out string was not verified
+  (doing so would require touching credentials), so an unrecognized signed-out
+  state also degrades to `Unsupported`.
 - **Claude PTY uses the platform `script` form**: BSD/macOS
-  (`script -q /dev/null <cmd>`) and util-linux (`script -q -c "<cmd>" /dev/null`)
-  are selected by `runtime.GOOS`. macOS is the primary tested target; the Linux
-  path follows util-linux syntax and is exercised on WSL.
+  (`script -q /dev/null sh -c '...'`) and util-linux (`script -q -c "..."
+  /dev/null`) are selected by `runtime.GOOS`, and both size the PTY with `stty`
+  before exec'ing the CLI. macOS is the primary tested target; the Linux path is
+  exercised on WSL.
 - **Codex adapter maps only the documented `rateLimits` bucket.** If a future
   server omits it and returns only multi-bucket data, Fetch returns `Unsupported`
   rather than guessing which bucket is the quota. The `codex app-server` must
-  respond within 2s or the card shows `Timed out`.
+  respond within 6s or the card shows `Timed out`.
 - No daemon, menu-bar app, dashboard, database, or cost accounting - by design.
 
 ## License
