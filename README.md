@@ -1,19 +1,19 @@
 # aiquota
 
-A fast personal terminal CLI that renders your remaining **Claude**, **Codex**,
-and **Z.AI** subscription quota as a compact card: session (5h) and weekly windows,
+A fast personal terminal CLI that renders your remaining **Claude** and **Codex**
+subscription quota as a compact card: session (5h) and weekly windows,
 percent remaining, and a human-readable reset countdown.
 
 ```
-╭────────────────────────────────╮  ╭────────────────────────────────╮  ╭────────────────────────────────╮
-│  Claude                    Team│  │  Codex                     Team│  │  Z.AI           Coding Plan Pro│
-│                                │  │                                │  │                                │
-│  Session ████░░░░░░  43% left  │  │  Session █████████░  85% left  │  │  Session ██████████  99% left  │
-│    resets in 1h 8m             │  │    resets in 18m               │  │    resets in 1h 30m            │
-│                                │  │                                │  │                                │
-│  Weekly  ███████░░░  67% left  │  │  Weekly  ███████░░░  71% left  │  │  Weekly  ███████░░░  72% left  │
-│    resets in 5d 18h            │  │    resets in 5d 17h            │  │    resets in 1d 14h            │
-╰────────────────────────────────╯  ╰────────────────────────────────╯  ╰────────────────────────────────╯
+╭────────────────────────────────╮  ╭────────────────────────────────╮
+│  Claude                    Team│  │  Codex                     Team│
+│                                │  │                                │
+│  Session ████░░░░░░  43% left  │  │  Session █████████░  85% left  │
+│    resets in 1h 8m             │  │    resets in 18m               │
+│                                │  │                                │
+│  Weekly  ███████░░░  67% left  │  │  Weekly  ███████░░░  71% left  │
+│    resets in 5d 18h            │  │    resets in 5d 17h            │
+╰────────────────────────────────╯  ╰────────────────────────────────╯
 updated 3s ago
 ```
 
@@ -81,8 +81,6 @@ Requires Go 1.26+ and, per provider:
 
 - **Claude**: the native `claude` CLI installed, on `PATH`, and logged in.
 - **Codex**: the native `codex` CLI installed, on `PATH`, and logged in.
-- **Z.AI**: a Coding Plan API key in `ZAI_API_KEY` (or the legacy `GLM_API_KEY`),
-  from the environment or `~/.hermes/.env`.
 
 A provider whose prerequisite is missing renders a failed card; the others are
 unaffected. macOS (darwin/arm64) is the primary target; Linux is exercised on
@@ -173,16 +171,6 @@ native CLIs in read-only status modes and consume their output:
   view is parseable. Hard 6s
   timeout; shutdown sends SIGTERM to the child process group, then uses SIGKILL
   only if the bounded grace period expires.
-- **Z.AI** (`internal/provider/zai`): the one adapter that uses an API key
-  instead of a CLI. It reads `ZAI_API_KEY`, then `GLM_API_KEY` from the
-  environment or `~/.hermes/.env`, and uses it only as an in-memory
-  `Authorization` header on read-only HTTPS calls to `api.z.ai`. The key is
-  never logged, cached, printed, persisted, or sent anywhere else. Quota comes
-  from the undocumented monitor endpoint `/api/monitor/usage/quota/limit`
-  (hour-based window to Session, the wider pool to Weekly); when it cannot
-  answer, the adapter falls back to a one-token chat probe that reports only the
-  served model and leaves both windows absent rather than guessing. Hard 15s
-  timeout.
 
 Raw child-process output (JSON-RPC payloads, terminal text) is held only in
 memory and is **never** written to the cache, logs, debug output, or test
@@ -199,7 +187,7 @@ fixtures. All committed test fixtures are hand-authored sanitized synthetic data
   cache entry. A provider that fails keeps its last good cached value; if there is
   no prior value, the safe failure is recorded. Writes are atomic (temp + rename).
 - Carried-over snapshots are named: a provider whose kept value is more than a
-  minute behind the render is appended to the footer as `zai 6h old`, with the
+  minute behind the render is appended to the footer as `codex 6h old`, with the
   category of the refresh that failed and left it behind when one was recorded
   (`claude 6d 18h old (unsupported)`), so a card full of hours-old numbers is
   never read as freshly queried and the reason is visible without `--debug`.
@@ -229,11 +217,10 @@ the same category the footer shows in parentheses.
 | Symptom | Meaning | What to check |
 | --- | --- | --- |
 | footer `claude 6d 18h old (unsupported)` | Every recent refresh parsed nothing usable, so the card is a carried-over snapshot. | The CLI's `/usage` layout changed. Run `claude` and `/usage` by hand and compare with the `Current session` / `Current week (all models)` lines the parser expects. |
-| footer `... (timed_out)` | The provider did not answer within its ceiling (Claude 6s, Codex 6s, Z.AI 15s). | Slow network or a CLI that hangs on startup. Run the CLI by hand once. |
+| footer `... (timed_out)` | The provider did not answer within its ceiling (Claude 6s, Codex 6s). | Slow network or a CLI that hangs on startup. Run the CLI by hand once. |
 | footer `... (unavailable)` or card `Unavailable` | The CLI is not on the `PATH` of the shell that ran `aiquota`, or it exited early. | Non-interactive shells (cron, `ssh host cmd`) often lack the interactive `PATH`. Export the CLI's directory before calling `aiquota`. |
 | card `Not signed in` | The CLI reported no usable session. | Log in with the native CLI. aiquota never runs login itself. |
 | `Session stale` with `reset passed` | The snapshot predates the window's reset, so its percent is not current. | Same cause as the footer note above; the footer says which refresh failed. |
-| Z.AI card shows a model name and no windows | The monitor endpoint did not answer, so the adapter fell back to a one-token probe. | Check the key in `ZAI_API_KEY` / `GLM_API_KEY` and the Z.AI console. |
 
 The cache lives at `~/Library/Caches/aiquota/cache.json` on macOS and
 `~/.cache/aiquota/cache.json` on Linux. Deleting it is always safe; the next

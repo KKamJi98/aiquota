@@ -165,7 +165,7 @@ func Card(r model.ProviderResult, now time.Time, color bool) []string {
 			body = append(body, windowLines(w.label, w.window, now, color)...)
 			body = append(body, "")
 		}
-		// Providers without quota windows (e.g. Z.AI: no public quota API)
+		// Providers without quota windows
 		// show their status note instead of an empty card body.
 		if len(body) <= 2 && r.Snapshot.Source != "" {
 			body = append(body, "  "+colorize(truncate(r.Snapshot.Source, innerWidth-2), ansiDim, color))
@@ -321,7 +321,7 @@ func footerText(results []model.ProviderResult, now, savedAt time.Time) string {
 }
 
 // staleNote names each provider whose snapshot is older than staleAfter, e.g.
-// "zai 6h old", followed by the category of the refresh that failed and left
+// "codex 6h old", followed by the category of the refresh that failed and left
 // the snapshot behind when the cache recorded one: "claude 6d 18h old
 // (unsupported)". A snapshot with no UpdatedAt says nothing about its age and
 // is left out rather than guessed at.
@@ -344,11 +344,8 @@ func staleNote(results []model.ProviderResult, now time.Time) string {
 }
 
 // displayName returns the card title for a provider id. Ids are lower-case, so
-// most are title-cased; ids whose brand is not a plain word are spelled out.
+// they are title-cased.
 func displayName(provider string) string {
-	if provider == "zai" {
-		return "Z.AI"
-	}
 	return capitalize(provider)
 }
 

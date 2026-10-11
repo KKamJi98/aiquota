@@ -189,21 +189,6 @@ func TestCardAbsentWindowIsOmitted(t *testing.T) {
 	}
 }
 
-func TestCardTitleSpellsOutBrandIds(t *testing.T) {
-	// The zai id is a brand, not a word: title-casing it to "Zai" misnames it.
-	now := time.Unix(1_700_000_000, 0)
-	out := strings.Join(Card(healthy("zai", "Coding Plan Pro", now), now, false), "\n")
-	if !strings.Contains(out, "Z.AI") {
-		t.Errorf("zai card should be titled Z.AI:\n%s", out)
-	}
-	if strings.Contains(out, "Zai") {
-		t.Errorf("zai card must not be title-cased to Zai:\n%s", out)
-	}
-	if got := displayName("claude"); got != "Claude" {
-		t.Errorf("other ids stay title-cased: got %q, want %q", got, "Claude")
-	}
-}
-
 func TestCardPlanLabelIsCapitalized(t *testing.T) {
 	// Providers report the tier verbatim ("team" from the Codex app-server), but
 	// the card is a display surface: the plan reads as a proper label.
@@ -239,12 +224,12 @@ func TestRenderStaleProviderIsNamedInFooter(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	fresh := healthy("claude", "Team", now)
 	fresh.Snapshot.UpdatedAt = now
-	stale := healthy("zai", "Coding Plan Pro", now)
+	stale := healthy("codex", "Team", now)
 	stale.Snapshot.UpdatedAt = now.Add(-6 * time.Hour)
 
 	out := Render([]model.ProviderResult{fresh, stale}, 120, false, now, now)
 
-	if !strings.Contains(out, "zai 6h old") {
+	if !strings.Contains(out, "codex 6h old") {
 		t.Errorf("footer should name the stale provider and its age:\n%s", out)
 	}
 	if strings.Contains(out, "claude 0s old") || strings.Contains(out, "claude ") {

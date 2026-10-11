@@ -25,7 +25,6 @@ import (
 	"github.com/kkamji98/aiquota/internal/provider"
 	"github.com/kkamji98/aiquota/internal/provider/claude"
 	"github.com/kkamji98/aiquota/internal/provider/codex"
-	"github.com/kkamji98/aiquota/internal/provider/zai"
 	"github.com/kkamji98/aiquota/internal/render"
 )
 
@@ -45,7 +44,7 @@ func main() {
 	registerFlags(flag.CommandLine, &options)
 	flag.Parse()
 
-	providers := []provider.Provider{claude.New(), codex.New(), zai.New()}
+	providers := []provider.Provider{claude.New(), codex.New()}
 	order := providerNames(providers)
 
 	store, err := cache.Default()
